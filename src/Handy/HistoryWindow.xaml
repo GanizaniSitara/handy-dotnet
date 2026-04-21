@@ -1,0 +1,50 @@
+<Window x:Class="Handy.HistoryWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Handy — History" Width="720" Height="560"
+        WindowStartupLocation="CenterScreen"
+        Closing="OnClosing">
+    <Grid Margin="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0" Text="Recent transcripts" FontSize="16" FontWeight="SemiBold" Margin="0,0,0,8"/>
+
+        <ListView Grid.Row="1" x:Name="HistoryList" SelectionMode="Single" AlternationCount="2">
+            <ListView.ItemContainerStyle>
+                <Style TargetType="ListViewItem">
+                    <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                    <Setter Property="Padding" Value="4,6"/>
+                </Style>
+            </ListView.ItemContainerStyle>
+            <ListView.View>
+                <GridView>
+                    <GridViewColumn Header="When" Width="150">
+                        <GridViewColumn.CellTemplate>
+                            <DataTemplate>
+                                <TextBlock Text="{Binding Timestamp}" Foreground="#777"/>
+                            </DataTemplate>
+                        </GridViewColumn.CellTemplate>
+                    </GridViewColumn>
+                    <GridViewColumn Header="Transcript" Width="520">
+                        <GridViewColumn.CellTemplate>
+                            <DataTemplate>
+                                <TextBlock Text="{Binding Text}" TextWrapping="Wrap"/>
+                            </DataTemplate>
+                        </GridViewColumn.CellTemplate>
+                    </GridViewColumn>
+                </GridView>
+            </ListView.View>
+        </ListView>
+
+        <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,8,0,0" HorizontalAlignment="Right">
+            <Button Content="Copy selected" Width="120" Margin="0,0,8,0" Click="OnCopy"/>
+            <Button Content="Delete selected" Width="120" Margin="0,0,8,0" Click="OnDelete"/>
+            <Button Content="Clear all" Width="90" Margin="0,0,8,0" Click="OnClearAll"/>
+            <Button Content="Close" Width="80" Click="OnClose"/>
+        </StackPanel>
+    </Grid>
+</Window>

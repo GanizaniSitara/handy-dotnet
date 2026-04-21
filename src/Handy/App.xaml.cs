@@ -1,0 +1,364 @@
+using System;
+using System.IO;
+using System.Linq;
+using System.Windows;
+using Handy.Services;
+
+namespace Handy;
+
+public partial class App : Application
+{
+    private TrayIconManager?         _tray;
+    private LowLevelKeyHookService?  _hook;
+    private AudioCaptureService?     _audio;
+    private ParakeetTranscriptionService? _asr;
+    private SileroVadService?        _vad;
+    private TextInjectionService?    _injector;
+    private AudioFeedbackService?    _feedback;
+    private HistoryService?          _history;
+    private MainWindow?              _settingsWindow;
+    private RecordingOverlay?        _overlay;
+    private AppSettings              _settings = new();
+    private string                   _dataDir = string.Empty;
+
+    private bool _recording;
+    private bool _cancelled;
+
+    internal AppSettings Settings => _settings;
+    internal ParakeetTranscriptionService? Asr => _asr;
+    internal HistoryService? History => _history;
+
+    private void OnStartup(object sender, StartupEventArgs e)
+    {
+        AppDomain.CurrentDomain.UnhandledException += (_, ex) =>
+            Log.Error($"Unhandled: {ex.ExceptionObject}");
+
+        _dataDir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+            "Handy");
+        Directory.CreateDirectory(_dataDir);
+        Log.Init(Path.Combine(_dataDir, "handy.log"));
+
+        // --transcribe-file is a one-shot; skip the single-instance gate so it
+        // doesn't conflict with a running tray instance.
+        var isOneShot = Array.IndexOf(e.Args, "--transcribe-file") >= 0;
+        if (!isOneShot && !SingleInstance.AcquireOrForward(e.Args))
+        {
+            Log.Info("Another Handy instance is already running; forwarded CLI and exiting.");
+            Shutdown();
+            return;
+        }
+
+        _settings = AppSettings.Load(_dataDir);
+        AutostartService.Apply(_settings.Autostart);
+
+        var modelDir = ResolveModelDir(_dataDir);
+
+        // --transcribe-file <path>: skip the UI, transcribe the file, write
+        // the result to %APPDATA%\Handy\last-transcript.txt, exit.
+        var fileIndex = Array.IndexOf(e.Args, "--transcribe-file");
+        if (fileIndex >= 0 && fileIndex + 1 < e.Args.Length)
+        {
+            RunTranscribeFile(modelDir, e.Args[fileIndex + 1], _dataDir);
+            Shutdown();
+            return;
+        }
+
+        // CLI flags for the *local* instance (single-instance forwarding is in SingleInstance.cs).
+        var startHiddenOverride = e.Args.Any(a => a == "--start-hidden");
+        var noTray = e.Args.Any(a => a == "--no-tray");
+        var showWindow = e.Args.Any(a => a == "--show");
+
+        _asr = new ParakeetTranscriptionService(modelDir);
+        _vad = new SileroVadService(Path.Combine(_dataDir, "models", "silero_vad.onnx"));
+        _audio = new AudioCaptureService(_settings.MicrophoneDeviceName);
+        _audio.Initialize(); // start continuous capture for pre-roll
+        _injector = new TextInjectionService();
+        _feedback = new AudioFeedbackService(_settings);
+        _history = new HistoryService(_dataDir, _settings.HistoryLimit);
+
+        _settingsWindow = new MainWindow();
+        _settingsWindow.SetModelPath(modelDir);
+        _overlay = new RecordingOverlay();
+
+        if (_settings.ShowTrayIcon && !noTray)
+        {
+            _tray = new TrayIconManager(
+                onOpenSettings: () => ShowSettings(),
+                onCopyLast:     () => CopyLastTranscript(),
+                onOpenHistory:  () => ShowHistory(),
+                onCancel:       () => OnCancel(),
+                onQuit:         () => Shutdown());
+        }
+
+        _hook = new LowLevelKeyHookService();
+        _hook.Configure(Hotkey.Parse(_settings.Hotkey), Hotkey.Parse(_settings.CancelHotkey));
+        _hook.OnTrigger += OnTrigger;
+        _hook.OnCancel  += OnCancel;
+        _hook.Install();
+
+        // Listen for CLI-forwarded signals from the single-instance gate.
+        SingleInstance.OnSignal += HandleSignal;
+
+        Log.Info($"Handy started. Model dir: {(_asr.IsReady ? modelDir : "NOT FOUND — see README")}");
+        Log.Info($"PTT={_settings.PushToTalk} Paste={_settings.PasteMethod} Autostart={_settings.Autostart}");
+
+        var shouldStartHidden = _settings.StartHidden || startHiddenOverride;
+        var trayAvailable = _tray is not null;
+        if (showWindow || !shouldStartHidden || !trayAvailable)
+            ShowSettings();
+    }
+
+    private void OnExit(object sender, ExitEventArgs e)
+    {
+        try { _settings.Save(); } catch { /* best-effort */ }
+        SingleInstance.OnSignal -= HandleSignal;
+        SingleInstance.Shutdown();
+        _hook?.Dispose();
+        _audio?.Dispose();
+        _asr?.Dispose();
+        _vad?.Dispose();
+        _feedback?.Dispose();
+        _tray?.Dispose();
+        Log.Shutdown();
+    }
+
+    internal void ReloadSettings()
+    {
+        // Caller has already mutated _settings; just re-apply side effects.
+        _hook?.Configure(Hotkey.Parse(_settings.Hotkey), Hotkey.Parse(_settings.CancelHotkey));
+        AutostartService.Apply(_settings.Autostart);
+        _feedback?.UpdateSettings(_settings);
+        _audio?.SetPreferredDevice(_settings.MicrophoneDeviceName);
+        _history?.SetLimit(_settings.HistoryLimit);
+        _settings.Save();
+    }
+
+    private void ShowOverlay()
+    {
+        if (_overlay is null) return;
+        if (string.Equals(_settings.OverlayPosition, "None", StringComparison.OrdinalIgnoreCase))
+            return;
+        _overlay.Show();
+        // Position after Show so ActualWidth is populated.
+        Dispatcher.BeginInvoke(new Action(() => _overlay.ApplyPosition(_settings.OverlayPosition)));
+    }
+
+    private void ShowSettings()
+    {
+        if (_settingsWindow is null) return;
+        _settingsWindow.Show();
+        if (_settingsWindow.WindowState == WindowState.Minimized)
+            _settingsWindow.WindowState = WindowState.Normal;
+        _settingsWindow.Topmost = true;   // pull to foreground
+        _settingsWindow.Topmost = false;
+        _settingsWindow.Activate();
+    }
+
+    private HistoryWindow? _historyWindow;
+    private void ShowHistory()
+    {
+        if (_historyWindow is null || !_historyWindow.IsLoaded)
+        {
+            _historyWindow = new HistoryWindow();
+        }
+        _historyWindow.Show();
+        _historyWindow.Activate();
+    }
+
+    private void OnTrigger(bool pressed)
+    {
+        if (_audio is null || _asr is null || _injector is null) return;
+
+        if (_settings.PushToTalk)
+        {
+            if (pressed && !_recording) StartRecording();
+            else if (!pressed && _recording) StopAndTranscribe();
+            return;
+        }
+
+        // Toggle mode fires on press only; ignore release.
+        if (!pressed) return;
+        if (!_recording) StartRecording();
+        else             StopAndTranscribe();
+    }
+
+    private void StartRecording()
+    {
+        if (_asr is null || !_asr.IsReady)
+        {
+            Log.Warn("Model not loaded; cannot start recording.");
+            _tray?.Notify("Handy", "Parakeet model missing. See README.");
+            return;
+        }
+        _recording = true;
+        _cancelled = false;
+        _tray?.SetRecording(true);
+        ShowOverlay();
+        _feedback?.PlayStart();
+        _audio!.Start(_settings.PreRollMs);
+        Log.Info($"Recording started (pre-roll {_settings.PreRollMs} ms).");
+    }
+
+    private async void StopAndTranscribe()
+    {
+        _recording = false;
+        _tray?.SetRecording(false);
+        _overlay?.Hide();
+        var samples = await _audio!.StopAsync(_settings.PostRollMs);
+        Log.Info($"Recording stopped. {samples.Length} samples captured (post-roll {_settings.PostRollMs} ms).");
+
+        if (_cancelled)
+        {
+            Log.Info("Recording cancelled; skipping transcription.");
+            return;
+        }
+        if (samples.Length < 16000 / 4)
+        {
+            Log.Warn("Recording too short; skipping.");
+            return;
+        }
+
+        _feedback?.PlayStop();
+        try
+        {
+            if (_settings.VadEnabled && _vad is not null && _vad.IsReady)
+                samples = _vad.Trim(samples, _settings.VadThreshold, _settings.VadPaddingMs);
+
+            var text = await _asr!.TranscribeAsync(samples);
+            if (_settings.AppendTrailingSpace && !string.IsNullOrEmpty(text))
+                text += ' ';
+            Log.Info($"Transcript: {text}");
+
+            if (!string.IsNullOrWhiteSpace(text))
+            {
+                _history?.Add(text);
+                _injector!.Paste(text, _settings);
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"Transcription failed: {ex}");
+            _tray?.Notify("Handy", "Transcription failed — see log.");
+        }
+    }
+
+    private void OnCancel()
+    {
+        if (!_recording) return;
+        _cancelled = true;
+        _feedback?.PlayCancel();
+        // StopAndTranscribe will see _cancelled and return without ASR.
+        StopAndTranscribe();
+    }
+
+    private void CopyLastTranscript()
+    {
+        var last = _history?.Last();
+        if (string.IsNullOrEmpty(last))
+        {
+            _tray?.Notify("Handy", "No transcript yet.");
+            return;
+        }
+        try
+        {
+            if (Dispatcher.CheckAccess()) Clipboard.SetText(last);
+            else Dispatcher.Invoke(() => Clipboard.SetText(last));
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"Copy last: clipboard set failed: {ex.Message}");
+        }
+    }
+
+    private void HandleSignal(string signal)
+    {
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            switch (signal)
+            {
+                case "--toggle-transcription":
+                    OnTrigger(pressed: true);
+                    if (_settings.PushToTalk) OnTrigger(pressed: false); // synthetic toggle
+                    break;
+                case "--cancel":
+                    OnCancel();
+                    break;
+                case "--show":
+                    ShowSettings();
+                    break;
+            }
+        }));
+    }
+
+    private static void RunTranscribeFile(string modelDir, string wavPath, string dataDir)
+    {
+        var outPath = Path.Combine(dataDir, "last-transcript.txt");
+        try
+        {
+            if (!File.Exists(wavPath))
+            {
+                Log.Error($"--transcribe-file: WAV not found: {wavPath}");
+                File.WriteAllText(outPath, $"ERROR: wav not found: {wavPath}");
+                return;
+            }
+
+            using var asr = new ParakeetTranscriptionService(modelDir);
+            if (!asr.IsReady)
+            {
+                Log.Error("--transcribe-file: Parakeet models not loaded.");
+                File.WriteAllText(outPath, "ERROR: models not loaded");
+                return;
+            }
+
+            var samples = WavIo.ReadMonoFloat16k(wavPath);
+            Log.Info($"--transcribe-file: loaded {samples.Length} samples from {wavPath}");
+
+            using var vad = new SileroVadService(Path.Combine(dataDir, "models", "silero_vad.onnx"));
+            if (vad.IsReady)
+                samples = vad.Trim(samples);
+
+            var text = asr.TranscribeAsync(samples).GetAwaiter().GetResult();
+            Log.Info($"--transcribe-file: {text}");
+            File.WriteAllText(outPath, text ?? string.Empty);
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"--transcribe-file failed: {ex}");
+            File.WriteAllText(outPath, "ERROR: " + ex.Message);
+        }
+    }
+
+    private static string ResolveModelDir(string dataDir)
+    {
+        var env = Environment.GetEnvironmentVariable("HANDY_MODEL_DIR");
+        if (!string.IsNullOrWhiteSpace(env) && HasParakeetAssets(env))
+            return env;
+
+        var localModels = Path.Combine(dataDir, "models");
+        Directory.CreateDirectory(localModels);
+        foreach (var name in new[] { "parakeet-tdt-0.6b-v3-int8", "parakeet-tdt-0.6b-v2-int8" })
+        {
+            var candidate = Path.Combine(localModels, name);
+            if (HasParakeetAssets(candidate)) return candidate;
+        }
+
+        var upstream = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+            "com.pais.handy", "models");
+        foreach (var name in new[] { "parakeet-tdt-0.6b-v3-int8", "parakeet-tdt-0.6b-v2-int8" })
+        {
+            var candidate = Path.Combine(upstream, name);
+            if (HasParakeetAssets(candidate)) return candidate;
+        }
+
+        return Path.Combine(localModels, "parakeet-tdt-0.6b-v2-int8");
+    }
+
+    private static bool HasParakeetAssets(string dir) =>
+        Directory.Exists(dir) &&
+        File.Exists(Path.Combine(dir, "nemo128.onnx")) &&
+        File.Exists(Path.Combine(dir, "encoder-model.int8.onnx")) &&
+        File.Exists(Path.Combine(dir, "decoder_joint-model.int8.onnx")) &&
+        File.Exists(Path.Combine(dir, "vocab.txt"));
+}
