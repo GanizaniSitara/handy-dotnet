@@ -1,0 +1,20 @@
+bin/
+obj/
+.vs/
+.idea/
+*.user
+*.suo
+*.pdb
+publish/
+
+# OS junk
+Thumbs.db
+.DS_Store
+
+# Stray runtime output (e.g. if a user runs the app from the repo root)
+handy.log
+handy.log.*
+settings.json
+history.json
+last-transcript.txt
+models/
