@@ -241,8 +241,11 @@ public partial class App : Application
 
             if (!string.IsNullOrWhiteSpace(text))
             {
+                Log.Info("Flow: before history.Add");
                 _history?.Add(text);
+                Log.Info("Flow: after history.Add, before paste");
                 _injector!.Paste(text, _settings);
+                Log.Info("Flow: after paste");
             }
         }
         catch (Exception ex)
