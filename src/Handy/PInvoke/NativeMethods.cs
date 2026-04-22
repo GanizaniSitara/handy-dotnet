@@ -41,6 +41,49 @@ internal static class NativeMethods
     [DllImport("user32.dll", SetLastError = true)]
     public static extern uint SendInput(uint nInputs, ref INPUT pInputs, int cbSize);
 
+    public const uint MAPVK_VK_TO_VSC = 0x00;
+
+    [DllImport("user32.dll")]
+    public static extern uint MapVirtualKey(uint uCode, uint uMapType);
+
+    public const uint MONITOR_DEFAULTTONEAREST = 0x00000002;
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct RECT
+    {
+        public int Left, Top, Right, Bottom;
+    }
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    public struct MONITORINFO
+    {
+        public uint cbSize;
+        public RECT rcMonitor;
+        public RECT rcWork;
+        public uint dwFlags;
+    }
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr MonitorFromWindow(IntPtr hwnd, uint dwFlags);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr MonitorFromPoint(POINT pt, uint dwFlags);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern bool GetMonitorInfo(IntPtr hMonitor, ref MONITORINFO lpmi);
+
+    [DllImport("user32.dll")]
+    public static extern bool GetCursorPos(out POINT lpPoint);
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct POINT
+    {
+        public int X, Y;
+    }
+
     [StructLayout(LayoutKind.Sequential)]
     public struct KEYBDINPUT
     {

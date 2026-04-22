@@ -1,19 +1,20 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Threading.Tasks;
 using NAudio.Wave;
 
 namespace Handy.Services;
 
 /// <summary>
-/// Continuous 16 kHz / mono / 16-bit mic capture with a ring buffer, so a
-/// recording can pull audio from BEFORE the hotkey press (pre-roll) and a
-/// trailing tail AFTER release (post-roll). Mirrors upstream's pre-roll buffer.
+/// Continuous 16 kHz / mono / 16-bit mic capture. A small byte ring backs the
+/// pre-roll window (audio captured BEFORE the hotkey press); once recording
+/// starts, every incoming block is also appended to an unbounded record stream
+/// so utterances of any length are preserved in full.
 ///
-/// The WaveInEvent runs from Initialize() until Dispose(). Every block is
-/// appended to a byte ring sized for the largest pre-roll a user might choose.
-/// Start() latches a start position backdated by PreRollMs; StopAsync() sleeps
-/// PostRollMs then latches the end position, and returns the slice as float32.
+/// Start() snapshots the pre-roll slice into the record stream, then keeps
+/// appending live blocks until StopAsync(), which waits PostRollMs for the
+/// trailing tail and returns the whole recording as float32 mono 16 kHz.
 /// </summary>
 public sealed class AudioCaptureService : IDisposable
 {
@@ -27,7 +28,14 @@ public sealed class AudioCaptureService : IDisposable
     private WaveInEvent? _wave;
 
     private bool _recording;
-    private long _recStart = -1;
+    private readonly MemoryStream _recBuffer = new();
+
+    /// <summary>
+    /// Fires per captured block (~50 ms) while recording. Payload is an array
+    /// of 5 normalized [0,1] RMS values, one per 10 ms sub-slice, suitable
+    /// for driving a small bar-style level meter in the recording overlay.
+    /// </summary>
+    public event Action<float[]>? OnLevels;
 
     private string _preferredDevice;
 
@@ -61,8 +69,11 @@ public sealed class AudioCaptureService : IDisposable
     {
         lock (_lock)
         {
+            _recBuffer.SetLength(0);
             var preRollBytes = Math.Clamp(preRollMs, 0, RingSeconds * 1000) * BytesPerSec / 1000;
-            _recStart = Math.Max(0, _writePos - preRollBytes);
+            var recStart = Math.Max(0, _writePos - preRollBytes);
+            var preRoll = ExtractUnlocked(recStart, _writePos);
+            if (preRoll.Length > 0) _recBuffer.Write(preRoll, 0, preRoll.Length);
             _recording = true;
         }
     }
@@ -78,11 +89,10 @@ public sealed class AudioCaptureService : IDisposable
         byte[] pcm;
         lock (_lock)
         {
-            if (!_recording || _recStart < 0) return Array.Empty<float>();
-            var recEnd = _writePos;
+            if (!_recording) return Array.Empty<float>();
             _recording = false;
-            pcm = ExtractUnlocked(_recStart, recEnd);
-            _recStart = -1;
+            pcm = _recBuffer.ToArray();
+            _recBuffer.SetLength(0);
         }
 
         var samples = new float[pcm.Length / 2];
@@ -144,6 +154,7 @@ public sealed class AudioCaptureService : IDisposable
 
     private void OnDataAvailable(object? sender, WaveInEventArgs e)
     {
+        bool recordingNow;
         lock (_lock)
         {
             var ringLen = _ring.Length;
@@ -161,7 +172,47 @@ public sealed class AudioCaptureService : IDisposable
                 Buffer.BlockCopy(e.Buffer, first, _ring, 0,          count - first);
             }
             _writePos += count;
+
+            if (_recording) _recBuffer.Write(e.Buffer, 0, count);
+            recordingNow = _recording;
         }
+
+        if (recordingNow && OnLevels is { } handler)
+        {
+            var levels = ComputeBarLevels(e.Buffer, e.BytesRecorded, bars: 5);
+            try { handler(levels); } catch (Exception ex) { Log.Warn($"OnLevels handler threw: {ex.Message}"); }
+        }
+    }
+
+    // Splits the block into N equal-length sub-slices, returns an RMS per slice
+    // normalised to [0,1] via a log-ish curve so soft speech still moves bars.
+    private static float[] ComputeBarLevels(byte[] pcm, int bytes, int bars)
+    {
+        var samples = bytes / 2;
+        if (samples == 0 || bars <= 0) return new float[bars > 0 ? bars : 0];
+        var perBar = Math.Max(1, samples / bars);
+        var @out = new float[bars];
+
+        for (int b = 0; b < bars; b++)
+        {
+            int start = b * perBar;
+            int end = (b == bars - 1) ? samples : Math.Min(samples, start + perBar);
+            if (end <= start) { @out[b] = 0f; continue; }
+
+            double sumSq = 0;
+            for (int i = start; i < end; i++)
+            {
+                short s = (short)(pcm[i * 2] | (pcm[i * 2 + 1] << 8));
+                double v = s / 32768.0;
+                sumSq += v * v;
+            }
+            var rms = Math.Sqrt(sumSq / (end - start));
+            // -55 dBFS → 0, -8 dBFS → 1; same anchors upstream uses for its bars.
+            var db = rms > 1e-6 ? 20.0 * Math.Log10(rms) : -80.0;
+            var norm = Math.Clamp((db + 55.0) / 47.0, 0.0, 1.0);
+            @out[b] = (float)Math.Pow(norm * 1.3, 0.7);
+        }
+        return @out;
     }
 
     private byte[] ExtractUnlocked(long from, long to)
@@ -200,5 +251,6 @@ public sealed class AudioCaptureService : IDisposable
         lock (_lock) { w = _wave; _wave = null; }
         try { w?.StopRecording(); } catch { }
         try { w?.Dispose(); } catch { }
+        _recBuffer.Dispose();
     }
 }
