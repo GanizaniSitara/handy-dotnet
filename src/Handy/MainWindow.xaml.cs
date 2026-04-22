@@ -64,9 +64,10 @@ public partial class MainWindow : Window
             SelectComboByContent(ClipboardCombo,  _settings.ClipboardHandling);
             SelectComboByContent(AutoSubmitCombo, _settings.AutoSubmitKey);
 
-            PasteDelayBox.Text = _settings.PasteDelayMs.ToString();
-            PreRollBox.Text    = _settings.PreRollMs.ToString();
-            PostRollBox.Text   = _settings.PostRollMs.ToString();
+            PasteDelayBox.Text      = _settings.PasteDelayMs.ToString();
+            DirectCharDelayBox.Text = _settings.DirectCharDelayMs.ToString();
+            PreRollBox.Text         = _settings.PreRollMs.ToString();
+            PostRollBox.Text        = _settings.PostRollMs.ToString();
 
             MicCombo.Items.Clear();
             MicCombo.Items.Add(new ComboBoxItem { Content = "(system default)" });
@@ -137,9 +138,10 @@ public partial class MainWindow : Window
         _settings.ClipboardHandling   = (string?)((ComboBoxItem)ClipboardCombo.SelectedItem)?.Content  ?? "DontModify";
         _settings.AutoSubmitKey       = (string?)((ComboBoxItem)AutoSubmitCombo.SelectedItem)?.Content ?? "None";
 
-        if (int.TryParse(PasteDelayBox.Text, out var ms)   && ms   is >= 0 and <= 2000) _settings.PasteDelayMs = ms;
-        if (int.TryParse(PreRollBox.Text,    out var pre)  && pre  is >= 0 and <= 2000) _settings.PreRollMs    = pre;
-        if (int.TryParse(PostRollBox.Text,   out var post) && post is >= 0 and <= 2000) _settings.PostRollMs   = post;
+        if (int.TryParse(PasteDelayBox.Text,      out var ms)    && ms    is >= 0 and <= 2000) _settings.PasteDelayMs      = ms;
+        if (int.TryParse(DirectCharDelayBox.Text, out var dc)    && dc    is >= 0 and <= 100)  _settings.DirectCharDelayMs = dc;
+        if (int.TryParse(PreRollBox.Text,         out var pre)   && pre   is >= 0 and <= 2000) _settings.PreRollMs         = pre;
+        if (int.TryParse(PostRollBox.Text,        out var post)  && post  is >= 0 and <= 2000) _settings.PostRollMs        = post;
 
         var mic = (string?)((ComboBoxItem)MicCombo.SelectedItem)?.Content ?? "";
         _settings.MicrophoneDeviceName = mic.StartsWith("(system") ? string.Empty : mic;

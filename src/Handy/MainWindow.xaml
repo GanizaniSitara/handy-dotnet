@@ -186,6 +186,17 @@
                             <TextBox   Grid.Column="5" x:Name="PostRollBox"/>
                         </Grid>
 
+                        <Grid Margin="{StaticResource RowMargin}">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="170"/>
+                                <ColumnDefinition Width="80"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="Direct per-char delay (ms)" Style="{StaticResource LabelCell}"
+                                       ToolTip="Only used when Paste method = Direct. 0 = fastest (native desktops). Try 2–3 ms for Citrix/RDP sessions where keystrokes get dropped or reordered."/>
+                            <TextBox   Grid.Column="1" x:Name="DirectCharDelayBox"/>
+                        </Grid>
+
                         <TextBlock Text="UI" FontWeight="SemiBold" Foreground="#555" Margin="0,12,0,6"/>
                         <Grid Margin="{StaticResource RowMargin}">
                             <Grid.ColumnDefinitions>

@@ -24,6 +24,10 @@ public sealed class AppSettings
 
     public int PasteDelayMs { get; set; } = 50;
 
+    /// <summary>Per-character sleep (ms) for Direct paste mode. 0 = max speed (native desktops).
+    /// Citrix/VDI sessions need a few ms to stop keystrokes being dropped or reordered.</summary>
+    public int DirectCharDelayMs { get; set; } = 0;
+
     public bool AppendTrailingSpace { get; set; } = false;
 
     /// <summary>DontModify | CopyToClipboard — upstream ClipboardHandling.</summary>
