@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Windows;
 using Handy.PInvoke;
 
@@ -76,6 +77,33 @@ public sealed class LowLevelKeyHookService : IDisposable
         // Skip modifier-only events — we wait for the base key and then sample modifier state.
         if (IsModifier(vk))
             return NativeMethods.CallNextHookEx(_hook, nCode, wParam, lParam);
+
+        // Diagnostic: log every event matching the configured trigger VK, regardless of mod state.
+        // Lets us confirm the hook is firing when the terminal has focus and whether mods/flags differ.
+        if (!_trigger.IsEmpty && vk == _trigger.Vk)
+        {
+            try
+            {
+                var mods = CurrentMods();
+                var fg = NativeMethods.GetForegroundWindow();
+                var title = new StringBuilder(256);
+                var cls   = new StringBuilder(128);
+                if (fg != IntPtr.Zero)
+                {
+                    NativeMethods.GetWindowText(fg, title, title.Capacity);
+                    NativeMethods.GetClassName(fg, cls, cls.Capacity);
+                }
+                uint pid = 0;
+                if (fg != IntPtr.Zero) NativeMethods.GetWindowThreadProcessId(fg, out pid);
+                string procName = "?";
+                try { using var p = Process.GetProcessById((int)pid); procName = p.ProcessName; } catch { }
+
+                Log.Info($"HOOK vk=0x{vk:X2} {(isDown ? "DN" : "UP")} flags=0x{data.flags:X2} " +
+                         $"mods={mods} req={_trigger.Required} match={(_trigger.Required & mods) == _trigger.Required} " +
+                         $"active={_triggerActive} fg=[{procName}|{cls}|{title}]");
+            }
+            catch (Exception ex) { Log.Error($"HOOK diag: {ex.Message}"); }
+        }
 
         // Check cancel first (cancel is a simple single-key match; modifier-agnostic is fine).
         if (!_cancel.IsEmpty && vk == _cancel.Vk && isDown)
