@@ -25,7 +25,7 @@ public sealed class TextInjectionService
 
         if (string.Equals(method, "Direct", StringComparison.OrdinalIgnoreCase))
         {
-            SendUnicodeString(text);
+            SendUnicodeString(text, settings.DirectCharDelayMs);
             SendAutoSubmit(settings.AutoSubmitKey);
             return;
         }
@@ -39,7 +39,7 @@ public sealed class TextInjectionService
         if (!TrySetClipboard(text))
         {
             Log.Warn("Clipboard set failed; falling back to direct keystroke injection.");
-            SendUnicodeString(text);
+            SendUnicodeString(text, settings.DirectCharDelayMs);
             SendAutoSubmit(settings.AutoSubmitKey);
             return;
         }
@@ -194,7 +194,7 @@ public sealed class TextInjectionService
         return sent;
     }
 
-    private static void SendUnicodeString(string text)
+    private static void SendUnicodeString(string text, int charDelayMs)
     {
         Span<NativeMethods.INPUT> pair = stackalloc NativeMethods.INPUT[2];
         foreach (var ch in text)
@@ -202,6 +202,7 @@ public sealed class TextInjectionService
             pair[0] = Unicode(ch, true);
             pair[1] = Unicode(ch, false);
             NativeMethods.SendInput((uint)pair.Length, ref pair[0], NativeMethods.INPUT.Size);
+            if (charDelayMs > 0) Thread.Sleep(charDelayMs);
         }
     }
 
