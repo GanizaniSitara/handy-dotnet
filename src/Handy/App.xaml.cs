@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Linq;
 using System.Windows;
+using System.Windows.Interop;
 using Handy.Services;
 
 namespace Handy;
@@ -80,6 +81,12 @@ public partial class App : Application
 
         _settingsWindow = new MainWindow();
         _settingsWindow.SetModelPath(modelDir);
+        // Force HWND creation up-front so the process has a live top-level
+        // window even in tray-only mode. Without this, Windows' foreground
+        // eligibility rules filter SendInput deliveries into apps that run
+        // in raw-input terminals (e.g. Claude Code in Windows Terminal).
+        // Upstream Handy gets this for free via Tauri's always-alive webview.
+        new WindowInteropHelper(_settingsWindow).EnsureHandle();
         _overlay = new RecordingOverlay();
 
         if (_settings.ShowTrayIcon && !noTray)
