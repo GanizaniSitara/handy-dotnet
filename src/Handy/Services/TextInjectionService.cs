@@ -17,6 +17,8 @@ public sealed class TextInjectionService
         if (string.IsNullOrEmpty(text)) return;
 
         var method = (settings.PasteMethod ?? "CtrlV").Trim();
+        Log.Info($"Paste: method={method}, len={text.Length}, fg={DescribeForegroundWindow()}");
+
         if (string.Equals(method, "None", StringComparison.OrdinalIgnoreCase))
         {
             SendAutoSubmit(settings.AutoSubmitKey);
@@ -25,7 +27,9 @@ public sealed class TextInjectionService
 
         if (string.Equals(method, "Direct", StringComparison.OrdinalIgnoreCase))
         {
-            SendUnicodeString(text, settings.DirectCharDelayMs);
+            var sent = SendUnicodeString(text, settings.DirectCharDelayMs);
+            var lastErr = Marshal.GetLastWin32Error();
+            Log.Info($"Paste: Direct SendInput events injected={sent} (expected={text.Length * 2}), lastErr={lastErr}");
             SendAutoSubmit(settings.AutoSubmitKey);
             return;
         }
@@ -194,16 +198,33 @@ public sealed class TextInjectionService
         return sent;
     }
 
-    private static void SendUnicodeString(string text, int charDelayMs)
+    private static uint SendUnicodeString(string text, int charDelayMs)
     {
         Span<NativeMethods.INPUT> pair = stackalloc NativeMethods.INPUT[2];
+        uint total = 0;
         foreach (var ch in text)
         {
             pair[0] = Unicode(ch, true);
             pair[1] = Unicode(ch, false);
-            NativeMethods.SendInput((uint)pair.Length, ref pair[0], NativeMethods.INPUT.Size);
+            total += NativeMethods.SendInput((uint)pair.Length, ref pair[0], NativeMethods.INPUT.Size);
             if (charDelayMs > 0) Thread.Sleep(charDelayMs);
         }
+        return total;
+    }
+
+    private static string DescribeForegroundWindow()
+    {
+        try
+        {
+            var hwnd = NativeMethods.GetForegroundWindow();
+            if (hwnd == IntPtr.Zero) return "(none)";
+            var title = new System.Text.StringBuilder(256);
+            NativeMethods.GetWindowText(hwnd, title, title.Capacity);
+            var cls = new System.Text.StringBuilder(128);
+            NativeMethods.GetClassName(hwnd, cls, cls.Capacity);
+            return $"[{cls}|{title}|0x{hwnd.ToInt64():X}]";
+        }
+        catch (Exception ex) { return $"(err: {ex.Message})"; }
     }
 
     private static NativeMethods.INPUT Key(ushort vk, bool down) => new()
