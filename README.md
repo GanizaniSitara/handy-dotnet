@@ -9,10 +9,10 @@ A native Windows .NET 8 port of the excellent
 > is the canonical version — actively developed, cross-platform, and feature-complete.
 > All the good design decisions here are theirs; any rough edges are ours.
 >
-> This port exists for one reason: the upstream build chain (Rust, MSYS2,
-> WebView2, bun/npm) is hard to install on locked-down corporate Windows
-> images. `.NET 8 SDK` usually isn't. If that's your situation too, this repo
-> may be useful. Otherwise please use upstream and support that project.
+> This port exists because we needed a .NET-based build for a specific
+> deployment setup where that toolchain fits better than the upstream's.
+> If that happens to suit you too, this repo may be useful — otherwise please
+> use upstream and support that project.
 
 Same UX as upstream — global hotkey → local speech-to-text → pasted into the
 active window. Same model too: NVIDIA NeMo Parakeet TDT via ONNX Runtime,
@@ -24,19 +24,16 @@ Settings file, history, and on-disk models are cross-compatible.
 
 ## Why port it
 
-Upstream's build chain (Rust, MSYS2, WebView2 bundle, bun/npm frontend) is
-frequently blocked or unsupported on managed corporate images. The .NET port
-keeps the feature set but drops the blockers:
+The port keeps the upstream feature set while building on the standard
+.NET toolchain:
 
-- No Rust, no MSYS2, no Chocolatey, no Node/bun.
-- `.NET 8 SDK` (user-scope install, no admin) is the only prerequisite to build.
-- Runtime dependency on the target box is the in-box `.NET 8 Desktop Runtime`
-  (shipped with most Windows images) — or publish self-contained and drop the
-  folder.
+- `.NET 8 SDK` as the only prerequisite to build.
+- Runtime is the in-box `.NET 8 Desktop Runtime` — or publish self-contained
+  and drop the folder.
 
 ## Framework choice: WPF over WinUI 3
 
-- WPF runs on the in-box `Microsoft.WindowsDesktop.App` runtime and publishes as a plain unpackaged `.exe`. WinUI 3 requires the Windows App SDK bootstrapper and MSIX packaging — often blocked or absent on managed images.
+- WPF runs on the in-box `Microsoft.WindowsDesktop.App` runtime and publishes as a plain unpackaged `.exe`. WinUI 3 requires the Windows App SDK bootstrapper and MSIX packaging, which adds runtime prerequisites we preferred to avoid.
 - WPF hosts the WinForms `NotifyIcon` tray directly via `UseWindowsForms=true`, so no third-party tray package.
 
 ## Transcription backend: Parakeet via ONNX Runtime
@@ -203,8 +200,8 @@ Deferred:
 
 The design, UX, model choices, and pipeline architecture are all
 [upstream Handy](https://github.com/cjpais/Handy)'s. This port just
-re-implements the same ideas in C# because we needed something the .NET
-toolchain could build. Please go star / support / use the upstream project
+re-implements the same ideas in C# for a setup where we preferred a
+.NET-based build. Please go star / support / use the upstream project
 first.
 
 - **Upstream:** <https://github.com/cjpais/Handy> — MIT, by
