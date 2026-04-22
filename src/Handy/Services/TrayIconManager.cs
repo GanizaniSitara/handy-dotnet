@@ -53,12 +53,32 @@ public sealed class TrayIconManager : IDisposable
         };
     }
 
-    public void SetRecording(bool recording)
+    public enum State { Idle, Recording, Transcribing }
+
+    public void SetState(State state)
     {
-        _statusItem.Text = recording ? "Recording…" : "Idle";
-        _cancelItem.Enabled = recording;
-        _icon.Text = recording ? "Handy — recording" : "Handy — press hotkey to dictate";
+        switch (state)
+        {
+            case State.Recording:
+                _statusItem.Text = "Recording…";
+                _cancelItem.Enabled = true;
+                _icon.Text = "Handy — recording";
+                break;
+            case State.Transcribing:
+                _statusItem.Text = "Transcribing…";
+                _cancelItem.Enabled = false;
+                _icon.Text = "Handy — transcribing";
+                break;
+            default:
+                _statusItem.Text = "Idle";
+                _cancelItem.Enabled = false;
+                _icon.Text = "Handy — press hotkey to dictate";
+                break;
+        }
     }
+
+    public void SetRecording(bool recording) =>
+        SetState(recording ? State.Recording : State.Idle);
 
     public void Notify(string title, string body)
     {

@@ -17,8 +17,10 @@ public sealed class AppSettings
     /// <summary>Push-to-talk (hold) vs. toggle.</summary>
     public bool PushToTalk { get; set; } = false;
 
-    /// <summary>Ctrl+V | Direct | None | ShiftInsert | CtrlShiftV.</summary>
-    public string PasteMethod { get; set; } = "CtrlV";
+    /// <summary>Ctrl+V | Direct | None | ShiftInsert | CtrlShiftV. Default matches
+    /// upstream Handy: Direct (Unicode keystroke injection) works in both GUI apps
+    /// and shells/TUIs (which often eat Ctrl+V as quoted-insert).</summary>
+    public string PasteMethod { get; set; } = "Direct";
 
     public int PasteDelayMs { get; set; } = 50;
 
@@ -37,8 +39,8 @@ public sealed class AppSettings
     public bool StartHidden { get; set; } = true;
     public bool ShowTrayIcon { get; set; } = true;
 
-    /// <summary>None | Top | Bottom.</summary>
-    public string OverlayPosition { get; set; } = "None";
+    /// <summary>None | Top | Bottom. Default matches upstream Handy: Bottom.</summary>
+    public string OverlayPosition { get; set; } = "Bottom";
 
     public bool AudioFeedback { get; set; } = true;
     public double AudioFeedbackVolume { get; set; } = 0.5;

@@ -12,19 +12,15 @@
         SizeToContent="WidthAndHeight">
     <Border CornerRadius="10" Padding="14,8" Background="#CC111111">
         <StackPanel Orientation="Horizontal">
-            <Ellipse x:Name="Dot" Width="12" Height="12" Fill="#E0403D" Margin="0,0,10,0">
-                <Ellipse.Triggers>
-                    <EventTrigger RoutedEvent="Ellipse.Loaded">
-                        <BeginStoryboard>
-                            <Storyboard RepeatBehavior="Forever">
-                                <DoubleAnimation Storyboard.TargetProperty="Opacity"
-                                                 From="1.0" To="0.25" Duration="0:0:0.6" AutoReverse="True"/>
-                            </Storyboard>
-                        </BeginStoryboard>
-                    </EventTrigger>
-                </Ellipse.Triggers>
-            </Ellipse>
-            <TextBlock x:Name="Label" Text="Recording" Foreground="White" FontSize="13" FontWeight="SemiBold" VerticalAlignment="Center"/>
+            <TextBlock x:Name="StateLabel" Text="Listening" Foreground="White" FontSize="13" FontWeight="SemiBold" VerticalAlignment="Center"/>
+            <!-- Live input-level bars; hidden during transcription. -->
+            <StackPanel x:Name="LevelBars" Orientation="Horizontal" VerticalAlignment="Center" Margin="10,0,0,0" Height="18">
+                <Rectangle x:Name="Bar0" Width="3" Height="2" Margin="1,0" Fill="#E0403D" VerticalAlignment="Bottom" RadiusX="1.5" RadiusY="1.5"/>
+                <Rectangle x:Name="Bar1" Width="3" Height="2" Margin="1,0" Fill="#E0403D" VerticalAlignment="Bottom" RadiusX="1.5" RadiusY="1.5"/>
+                <Rectangle x:Name="Bar2" Width="3" Height="2" Margin="1,0" Fill="#E0403D" VerticalAlignment="Bottom" RadiusX="1.5" RadiusY="1.5"/>
+                <Rectangle x:Name="Bar3" Width="3" Height="2" Margin="1,0" Fill="#E0403D" VerticalAlignment="Bottom" RadiusX="1.5" RadiusY="1.5"/>
+                <Rectangle x:Name="Bar4" Width="3" Height="2" Margin="1,0" Fill="#E0403D" VerticalAlignment="Bottom" RadiusX="1.5" RadiusY="1.5"/>
+            </StackPanel>
         </StackPanel>
     </Border>
 </Window>

@@ -72,6 +72,7 @@ public partial class App : Application
         _asr = new ParakeetTranscriptionService(modelDir);
         _vad = new SileroVadService(Path.Combine(_dataDir, "models", "silero_vad.onnx"));
         _audio = new AudioCaptureService(_settings.MicrophoneDeviceName);
+        _audio.OnLevels += levels => _overlay?.SetLevels(levels);
         _audio.Initialize(); // start continuous capture for pre-roll
         _injector = new TextInjectionService();
         _feedback = new AudioFeedbackService(_settings);
@@ -134,14 +135,21 @@ public partial class App : Application
         _settings.Save();
     }
 
-    private void ShowOverlay()
+    private void ShowOverlay(RecordingOverlay.State state)
     {
         if (_overlay is null) return;
         if (string.Equals(_settings.OverlayPosition, "None", StringComparison.OrdinalIgnoreCase))
             return;
+        _overlay.SetState(state);
         _overlay.Show();
         // Position after Show so ActualWidth is populated.
         Dispatcher.BeginInvoke(new Action(() => _overlay.ApplyPosition(_settings.OverlayPosition)));
+    }
+
+    private void UpdateOverlay(RecordingOverlay.State state)
+    {
+        if (_overlay is null || !_overlay.IsVisible) return;
+        _overlay.SetState(state);
     }
 
     private void ShowSettings()
@@ -193,8 +201,8 @@ public partial class App : Application
         }
         _recording = true;
         _cancelled = false;
-        _tray?.SetRecording(true);
-        ShowOverlay();
+        _tray?.SetState(Services.TrayIconManager.State.Recording);
+        ShowOverlay(RecordingOverlay.State.Recording);
         _feedback?.PlayStart();
         _audio!.Start(_settings.PreRollMs);
         Log.Info($"Recording started (pre-roll {_settings.PreRollMs} ms).");
@@ -203,23 +211,24 @@ public partial class App : Application
     private async void StopAndTranscribe()
     {
         _recording = false;
-        _tray?.SetRecording(false);
-        _overlay?.Hide();
         var samples = await _audio!.StopAsync(_settings.PostRollMs);
         Log.Info($"Recording stopped. {samples.Length} samples captured (post-roll {_settings.PostRollMs} ms).");
 
         if (_cancelled)
         {
+            SetUiState(isRecording: false, isTranscribing: false, hideOverlay: true);
             Log.Info("Recording cancelled; skipping transcription.");
             return;
         }
         if (samples.Length < 16000 / 4)
         {
+            SetUiState(isRecording: false, isTranscribing: false, hideOverlay: true);
             Log.Warn("Recording too short; skipping.");
             return;
         }
 
         _feedback?.PlayStop();
+        SetUiState(isRecording: false, isTranscribing: true, hideOverlay: false);
         try
         {
             if (_settings.VadEnabled && _vad is not null && _vad.IsReady)
@@ -241,6 +250,32 @@ public partial class App : Application
             Log.Error($"Transcription failed: {ex}");
             _tray?.Notify("Handy", "Transcription failed — see log.");
         }
+        finally
+        {
+            SetUiState(isRecording: false, isTranscribing: false, hideOverlay: true);
+        }
+    }
+
+    // UI touches (tray NotifyIcon + WPF overlay) must happen on the dispatcher.
+    // Continuations after awaits in StopAndTranscribe can land on the threadpool,
+    // so always marshal through here rather than touching _tray / _overlay directly.
+    private void SetUiState(bool isRecording, bool isTranscribing, bool hideOverlay)
+    {
+        void Apply()
+        {
+            var trayState = isRecording ? Services.TrayIconManager.State.Recording
+                          : isTranscribing ? Services.TrayIconManager.State.Transcribing
+                          : Services.TrayIconManager.State.Idle;
+            _tray?.SetState(trayState);
+
+            if (hideOverlay)
+                _overlay?.Hide();
+            else if (isTranscribing)
+                UpdateOverlay(RecordingOverlay.State.Transcribing);
+        }
+
+        if (Dispatcher.CheckAccess()) Apply();
+        else Dispatcher.Invoke(Apply);
     }
 
     private void OnCancel()

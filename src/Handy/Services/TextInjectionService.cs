@@ -1,4 +1,5 @@
 using System;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Windows;
 using Handy.PInvoke;
@@ -42,16 +43,19 @@ public sealed class TextInjectionService
             SendAutoSubmit(settings.AutoSubmitKey);
             return;
         }
+        Log.Info($"Paste: clipboard set ({text.Length} chars), method={method}, restoreAfter={restoreAfter}");
 
         if (settings.PasteDelayMs > 0)
             Thread.Sleep(settings.PasteDelayMs);
 
-        switch (method.ToLowerInvariant())
+        uint injected = method.ToLowerInvariant() switch
         {
-            case "shiftinsert":  SendShiftInsert();    break;
-            case "ctrlshiftv":   SendCtrlShiftV();     break;
-            default:             SendCtrlV();          break;
-        }
+            "shiftinsert" => SendShiftInsert(),
+            "ctrlshiftv"  => SendCtrlShiftV(),
+            _             => SendCtrlV(),
+        };
+        var lastErr = Marshal.GetLastWin32Error();
+        Log.Info($"Paste: SendInput events injected={injected}, lastErr={lastErr}");
 
         SendAutoSubmit(settings.AutoSubmitKey);
 
@@ -132,39 +136,62 @@ public sealed class TextInjectionService
         }
     }
 
-    private static void SendCtrlV()
+    // Modifier chords must be sent in three stages: press the modifier(s),
+    // press+release the action key, sleep, then release the modifier(s).
+    // Sending a single batched 4-event SendInput collapses the Ctrl-up and
+    // V-up into the same keyboard tick and Windows Terminal (plus several
+    // other terminal-style apps) drops the chord. Upstream's enigo path
+    // sleeps 100 ms between click and modifier release; we do the same.
+    private const int ChordHoldMs = 100;
+
+    private static uint SendOne(ushort vk, bool down)
+    {
+        Span<NativeMethods.INPUT> i = stackalloc NativeMethods.INPUT[1];
+        i[0] = Key(vk, down);
+        return NativeMethods.SendInput(1, ref i[0], NativeMethods.INPUT.Size);
+    }
+
+    private static uint SendClick(ushort vk)
+    {
+        Span<NativeMethods.INPUT> i = stackalloc NativeMethods.INPUT[2];
+        i[0] = Key(vk, true);
+        i[1] = Key(vk, false);
+        return NativeMethods.SendInput(2, ref i[0], NativeMethods.INPUT.Size);
+    }
+
+    private static uint SendCtrlV()
     {
         const ushort VK_CONTROL = 0x11, VK_V = 0x56;
-        Span<NativeMethods.INPUT> i = stackalloc NativeMethods.INPUT[4];
-        i[0] = Key(VK_CONTROL, true);
-        i[1] = Key(VK_V,       true);
-        i[2] = Key(VK_V,       false);
-        i[3] = Key(VK_CONTROL, false);
-        NativeMethods.SendInput((uint)i.Length, ref i[0], NativeMethods.INPUT.Size);
+        uint sent = 0;
+        sent += SendOne(VK_CONTROL, true);
+        sent += SendClick(VK_V);
+        Thread.Sleep(ChordHoldMs);
+        sent += SendOne(VK_CONTROL, false);
+        return sent;
     }
 
-    private static void SendCtrlShiftV()
+    private static uint SendCtrlShiftV()
     {
         const ushort VK_CONTROL = 0x11, VK_SHIFT = 0x10, VK_V = 0x56;
-        Span<NativeMethods.INPUT> i = stackalloc NativeMethods.INPUT[6];
-        i[0] = Key(VK_CONTROL, true);
-        i[1] = Key(VK_SHIFT,   true);
-        i[2] = Key(VK_V,       true);
-        i[3] = Key(VK_V,       false);
-        i[4] = Key(VK_SHIFT,   false);
-        i[5] = Key(VK_CONTROL, false);
-        NativeMethods.SendInput((uint)i.Length, ref i[0], NativeMethods.INPUT.Size);
+        uint sent = 0;
+        sent += SendOne(VK_CONTROL, true);
+        sent += SendOne(VK_SHIFT,   true);
+        sent += SendClick(VK_V);
+        Thread.Sleep(ChordHoldMs);
+        sent += SendOne(VK_SHIFT,   false);
+        sent += SendOne(VK_CONTROL, false);
+        return sent;
     }
 
-    private static void SendShiftInsert()
+    private static uint SendShiftInsert()
     {
         const ushort VK_SHIFT = 0x10, VK_INSERT = 0x2D;
-        Span<NativeMethods.INPUT> i = stackalloc NativeMethods.INPUT[4];
-        i[0] = Key(VK_SHIFT,  true);
-        i[1] = Key(VK_INSERT, true);
-        i[2] = Key(VK_INSERT, false);
-        i[3] = Key(VK_SHIFT,  false);
-        NativeMethods.SendInput((uint)i.Length, ref i[0], NativeMethods.INPUT.Size);
+        uint sent = 0;
+        sent += SendOne(VK_SHIFT, true);
+        sent += SendClick(VK_INSERT);
+        Thread.Sleep(ChordHoldMs);
+        sent += SendOne(VK_SHIFT, false);
+        return sent;
     }
 
     private static void SendUnicodeString(string text)
@@ -186,7 +213,10 @@ public sealed class TextInjectionService
             ki = new NativeMethods.KEYBDINPUT
             {
                 wVk = vk,
-                wScan = 0,
+                // Windows Terminal and several other apps gate on the scan
+                // code being populated — they drop synthesised Ctrl+V if
+                // wScan is 0. MapVirtualKey fills in the real scan code.
+                wScan = (ushort)NativeMethods.MapVirtualKey(vk, NativeMethods.MAPVK_VK_TO_VSC),
                 dwFlags = down ? 0u : NativeMethods.KEYEVENTF_KEYUP,
                 time = 0,
                 dwExtraInfo = IntPtr.Zero,
