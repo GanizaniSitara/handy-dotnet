@@ -28,8 +28,8 @@ public sealed class TextInjectionService
         if (string.Equals(method, "Direct", StringComparison.OrdinalIgnoreCase))
         {
             var sent = SendUnicodeString(text, settings.DirectCharDelayMs);
-            var lastErr = Marshal.GetLastWin32Error();
-            Log.Info($"Paste: Direct SendInput events injected={sent} (expected={text.Length * 2}), lastErr={lastErr}");
+            var directErr = Marshal.GetLastWin32Error();
+            Log.Info($"Paste: Direct SendInput events injected={sent} (expected={text.Length * 2}), lastErr={directErr}");
             SendAutoSubmit(settings.AutoSubmitKey);
             return;
         }
