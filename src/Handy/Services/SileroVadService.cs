@@ -145,7 +145,7 @@ public sealed class SileroVadService : IDisposable
     /// </summary>
     public float[] Smooth(
         float[] samples,
-        double threshold = 0.5,
+        double threshold = 0.3,
         int prefillFrames = 14,
         int hangoverFrames = 14,
         int onsetFrames = 2)
