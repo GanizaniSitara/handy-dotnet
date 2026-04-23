@@ -165,6 +165,26 @@ public partial class MainWindow : Window
 
         ((App)Application.Current).ReloadSettings();
         Log.Info("Settings applied.");
+        ShowSaveStatus($"Saved at {DateTime.Now:HH:mm:ss}");
+    }
+
+    private System.Windows.Threading.DispatcherTimer? _saveStatusTimer;
+
+    private void ShowSaveStatus(string message)
+    {
+        if (SaveStatusText is null) return;
+        SaveStatusText.Text = message;
+        _saveStatusTimer?.Stop();
+        _saveStatusTimer = new System.Windows.Threading.DispatcherTimer
+        {
+            Interval = TimeSpan.FromSeconds(4),
+        };
+        _saveStatusTimer.Tick += (_, _) =>
+        {
+            SaveStatusText.Text = string.Empty;
+            _saveStatusTimer?.Stop();
+        };
+        _saveStatusTimer.Start();
     }
 
     private void OnVolumeChanged(object sender, System.Windows.RoutedPropertyChangedEventArgs<double> e)

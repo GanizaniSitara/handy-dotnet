@@ -276,10 +276,14 @@
 
         <TextBlock Grid.Row="1" Text="Settings live at %APPDATA%\Handy\settings.json" Margin="4,8,0,0" Style="{StaticResource Hint}"/>
 
-        <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,8,0,0">
-            <Button Content="Apply" Width="80" Margin="0,0,8,0" Click="OnApply"/>
-            <Button Content="Hide"  Width="80" Margin="0,0,8,0" Click="OnHide"/>
-            <Button Content="Quit"  Width="80" Click="OnQuit"/>
-        </StackPanel>
+        <DockPanel Grid.Row="2" Margin="0,8,0,0" LastChildFill="True">
+            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                <Button Content="Apply" Width="80" Margin="0,0,8,0" Click="OnApply"/>
+                <Button Content="Hide"  Width="80" Margin="0,0,8,0" Click="OnHide"/>
+                <Button Content="Quit"  Width="80" Click="OnQuit"/>
+            </StackPanel>
+            <TextBlock x:Name="SaveStatusText" VerticalAlignment="Center" Margin="4,0,0,0"
+                       Foreground="#2a8f3a" FontWeight="SemiBold"/>
+        </DockPanel>
     </Grid>
 </Window>
