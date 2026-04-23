@@ -46,6 +46,12 @@ public sealed class AppSettings
     /// <summary>None | Top | Bottom. Default matches upstream Handy: Bottom.</summary>
     public string OverlayPosition { get; set; } = "Bottom";
 
+    /// <summary>Per-event beeps. Default off — speakers waking from sleep can clip the start beep.</summary>
+    public bool BeepOnStart  { get; set; } = false;
+    public bool BeepOnStop   { get; set; } = false;
+    public bool BeepOnCancel { get; set; } = false;
+    public double BeepVolume { get; set; } = 0.5;
+
     /// <summary>Trim leading/trailing silence with Silero VAD before transcription.</summary>
     public bool VadEnabled { get; set; } = true;
     public double VadThreshold { get; set; } = 0.3;

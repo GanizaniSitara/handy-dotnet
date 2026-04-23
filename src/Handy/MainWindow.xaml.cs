@@ -77,6 +77,12 @@ public partial class MainWindow : Window
 
             SelectComboByContent(OverlayCombo, _settings.OverlayPosition);
 
+            BeepStartCheck.IsChecked   = _settings.BeepOnStart;
+            BeepStopCheck.IsChecked    = _settings.BeepOnStop;
+            BeepCancelCheck.IsChecked  = _settings.BeepOnCancel;
+            BeepVolumeSlider.Value     = Math.Clamp(_settings.BeepVolume, 0, 1);
+            BeepVolumePct.Text         = $"{(int)(BeepVolumeSlider.Value * 100)}%";
+
             VadCheck.IsChecked      = _settings.VadEnabled;
             VadThresholdBox.Text    = _settings.VadThreshold.ToString("F2", CultureInfo.InvariantCulture);
             VadPaddingBox.Text      = _settings.VadPaddingMs.ToString();
@@ -144,6 +150,11 @@ public partial class MainWindow : Window
 
         _settings.OverlayPosition = (string?)((ComboBoxItem)OverlayCombo.SelectedItem)?.Content ?? "None";
 
+        _settings.BeepOnStart  = BeepStartCheck.IsChecked  == true;
+        _settings.BeepOnStop   = BeepStopCheck.IsChecked   == true;
+        _settings.BeepOnCancel = BeepCancelCheck.IsChecked == true;
+        _settings.BeepVolume   = BeepVolumeSlider.Value;
+
         _settings.VadEnabled = VadCheck.IsChecked == true;
         if (double.TryParse(VadThresholdBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var th) && th >= 0 && th <= 1)
             _settings.VadThreshold = th;
@@ -179,6 +190,11 @@ public partial class MainWindow : Window
             _saveStatusTimer?.Stop();
         };
         _saveStatusTimer.Start();
+    }
+
+    private void OnBeepVolumeChanged(object sender, System.Windows.RoutedPropertyChangedEventArgs<double> e)
+    {
+        if (BeepVolumePct is not null) BeepVolumePct.Text = $"{(int)(e.NewValue * 100)}%";
     }
 
     private void OnHotkeyBoxKeyDown(object sender, KeyEventArgs e) => CaptureChord(HotkeyBox, e);
