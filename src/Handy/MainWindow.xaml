@@ -75,6 +75,36 @@
                             <CheckBox  Grid.Column="1" IsEnabled="False" Content="(not implemented)" VerticalAlignment="Center"/>
                         </Grid>
 
+                        <TextBlock Text="BEEPS" FontWeight="SemiBold" Foreground="#555" Margin="0,12,0,6"/>
+                        <Grid Margin="{StaticResource RowMargin}">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="170"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="20"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="20"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="Beep on" Style="{StaticResource LabelCell}"/>
+                            <CheckBox  Grid.Column="1" x:Name="BeepStartCheck"  Content="Start"  VerticalAlignment="Center"/>
+                            <CheckBox  Grid.Column="3" x:Name="BeepStopCheck"   Content="Stop"   VerticalAlignment="Center"/>
+                            <CheckBox  Grid.Column="6" x:Name="BeepCancelCheck" Content="Cancel" VerticalAlignment="Center"/>
+                        </Grid>
+                        <Grid Margin="{StaticResource RowMargin}">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="170"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="60"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="Beep volume" Style="{StaticResource LabelCell}"/>
+                            <Slider    Grid.Column="1" x:Name="BeepVolumeSlider" Minimum="0" Maximum="1" TickFrequency="0.1"
+                                       IsSnapToTickEnabled="False" VerticalAlignment="Center"
+                                       ValueChanged="OnBeepVolumeChanged"/>
+                            <TextBlock Grid.Column="2" x:Name="BeepVolumePct" Style="{StaticResource LabelCell}" TextAlignment="Right"/>
+                        </Grid>
+
                         <TextBlock Text="VOICE ACTIVITY (VAD)" FontWeight="SemiBold" Foreground="#555" Margin="0,12,0,6"/>
                         <Grid Margin="{StaticResource RowMargin}">
                             <Grid.ColumnDefinitions>
