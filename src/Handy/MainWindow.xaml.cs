@@ -77,10 +77,6 @@ public partial class MainWindow : Window
 
             SelectComboByContent(OverlayCombo, _settings.OverlayPosition);
 
-            FeedbackCheck.IsChecked    = _settings.AudioFeedback;
-            VolumeSlider.Value         = Math.Clamp(_settings.AudioFeedbackVolume, 0, 1);
-            VolumePct.Text             = $"{(int)(VolumeSlider.Value * 100)}%";
-
             VadCheck.IsChecked      = _settings.VadEnabled;
             VadThresholdBox.Text    = _settings.VadThreshold.ToString("F2", CultureInfo.InvariantCulture);
             VadPaddingBox.Text      = _settings.VadPaddingMs.ToString();
@@ -147,8 +143,6 @@ public partial class MainWindow : Window
         _settings.MicrophoneDeviceName = mic.StartsWith("(system") ? string.Empty : mic;
 
         _settings.OverlayPosition = (string?)((ComboBoxItem)OverlayCombo.SelectedItem)?.Content ?? "None";
-        _settings.AudioFeedback        = FeedbackCheck.IsChecked == true;
-        _settings.AudioFeedbackVolume  = VolumeSlider.Value;
 
         _settings.VadEnabled = VadCheck.IsChecked == true;
         if (double.TryParse(VadThresholdBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var th) && th >= 0 && th <= 1)
@@ -185,11 +179,6 @@ public partial class MainWindow : Window
             _saveStatusTimer?.Stop();
         };
         _saveStatusTimer.Start();
-    }
-
-    private void OnVolumeChanged(object sender, System.Windows.RoutedPropertyChangedEventArgs<double> e)
-    {
-        if (VolumePct is not null) VolumePct.Text = $"{(int)(e.NewValue * 100)}%";
     }
 
     private void OnHotkeyBoxKeyDown(object sender, KeyEventArgs e) => CaptureChord(HotkeyBox, e);

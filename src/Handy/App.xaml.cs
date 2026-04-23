@@ -15,7 +15,6 @@ public partial class App : Application
     private ParakeetTranscriptionService? _asr;
     private SileroVadService?        _vad;
     private TextInjectionService?    _injector;
-    private AudioFeedbackService?    _feedback;
     private HistoryService?          _history;
     private MainWindow?              _settingsWindow;
     private RecordingOverlay?        _overlay;
@@ -76,7 +75,6 @@ public partial class App : Application
         _audio.OnLevels += levels => _overlay?.SetLevels(levels);
         _audio.Initialize(); // start continuous capture for pre-roll
         _injector = new TextInjectionService();
-        _feedback = new AudioFeedbackService(_settings);
         _history = new HistoryService(_dataDir, _settings.HistoryLimit);
 
         _settingsWindow = new MainWindow();
@@ -130,7 +128,6 @@ public partial class App : Application
         _audio?.Dispose();
         _asr?.Dispose();
         _vad?.Dispose();
-        _feedback?.Dispose();
         _tray?.Dispose();
         Log.Shutdown();
     }
@@ -140,7 +137,6 @@ public partial class App : Application
         // Caller has already mutated _settings; just re-apply side effects.
         _hook?.Configure(Hotkey.Parse(_settings.Hotkey), Hotkey.Parse(_settings.CancelHotkey));
         AutostartService.Apply(_settings.Autostart);
-        _feedback?.UpdateSettings(_settings);
         _audio?.SetPreferredDevice(_settings.MicrophoneDeviceName);
         _history?.SetLimit(_settings.HistoryLimit);
         _settings.Save();
@@ -214,7 +210,7 @@ public partial class App : Application
         _cancelled = false;
         _tray?.SetState(Services.TrayIconManager.State.Recording);
         ShowOverlay(RecordingOverlay.State.Recording);
-        _feedback?.PlayStart();
+        // Start beep removed — the bottom recording overlay is sufficient indication.
         _audio!.Start(_settings.PreRollMs);
         Log.Info($"Recording started (pre-roll {_settings.PreRollMs} ms).");
     }
@@ -238,7 +234,7 @@ public partial class App : Application
             return;
         }
 
-        _feedback?.PlayStop();
+        // Stop beep removed — overlay state-change is sufficient and Citrix audio mangles the tone.
         SetUiState(isRecording: false, isTranscribing: true, hideOverlay: false);
         try
         {
@@ -296,7 +292,6 @@ public partial class App : Application
     {
         if (!_recording) return;
         _cancelled = true;
-        _feedback?.PlayCancel();
         // StopAndTranscribe will see _cancelled and return without ASR.
         StopAndTranscribe();
     }
