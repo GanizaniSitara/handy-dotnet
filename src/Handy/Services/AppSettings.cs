@@ -48,7 +48,7 @@ public sealed class AppSettings
 
     /// <summary>Trim leading/trailing silence with Silero VAD before transcription.</summary>
     public bool VadEnabled { get; set; } = true;
-    public double VadThreshold { get; set; } = 0.5;
+    public double VadThreshold { get; set; } = 0.3;
     public int VadPaddingMs { get; set; } = 200;
 
     /// <summary>Extra audio included from BEFORE the hotkey press. Catches the first syllable.</summary>
