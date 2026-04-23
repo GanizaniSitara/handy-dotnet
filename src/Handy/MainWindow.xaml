@@ -75,28 +75,6 @@
                             <CheckBox  Grid.Column="1" IsEnabled="False" Content="(not implemented)" VerticalAlignment="Center"/>
                         </Grid>
 
-                        <Grid Margin="{StaticResource RowMargin}">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="170"/>
-                                <ColumnDefinition Width="*"/>
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Grid.Column="0" Text="Audio feedback (beeps)" Style="{StaticResource LabelCell}"/>
-                            <CheckBox  Grid.Column="1" x:Name="FeedbackCheck" VerticalAlignment="Center"/>
-                        </Grid>
-
-                        <Grid Margin="{StaticResource RowMargin}">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="170"/>
-                                <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="60"/>
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Grid.Column="0" Text="Feedback volume" Style="{StaticResource LabelCell}"/>
-                            <Slider    Grid.Column="1" x:Name="VolumeSlider" Minimum="0" Maximum="1" TickFrequency="0.1"
-                                       IsSnapToTickEnabled="False" VerticalAlignment="Center"
-                                       ValueChanged="OnVolumeChanged"/>
-                            <TextBlock Grid.Column="2" x:Name="VolumePct" Style="{StaticResource LabelCell}" TextAlignment="Right"/>
-                        </Grid>
-
                         <TextBlock Text="VOICE ACTIVITY (VAD)" FontWeight="SemiBold" Foreground="#555" Margin="0,12,0,6"/>
                         <Grid Margin="{StaticResource RowMargin}">
                             <Grid.ColumnDefinitions>

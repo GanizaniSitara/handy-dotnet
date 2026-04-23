@@ -46,9 +46,6 @@ public sealed class AppSettings
     /// <summary>None | Top | Bottom. Default matches upstream Handy: Bottom.</summary>
     public string OverlayPosition { get; set; } = "Bottom";
 
-    public bool AudioFeedback { get; set; } = true;
-    public double AudioFeedbackVolume { get; set; } = 0.5;
-
     /// <summary>Trim leading/trailing silence with Silero VAD before transcription.</summary>
     public bool VadEnabled { get; set; } = true;
     public double VadThreshold { get; set; } = 0.5;
