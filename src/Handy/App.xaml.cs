@@ -86,7 +86,11 @@ public partial class App : Application
         // eligibility rules filter SendInput deliveries into apps that run
         // in raw-input terminals (e.g. Claude Code in Windows Terminal).
         // Upstream Handy gets this for free via Tauri's always-alive webview.
-        new WindowInteropHelper(_settingsWindow).EnsureHandle();
+        // Wrapped in try/catch because any throw here was taking down the
+        // rest of OnStartup (including _hook.Install()) — regression seen
+        // 2026-04-23 where Ctrl+Alt+Space stopped firing in all terminals.
+        try { new WindowInteropHelper(_settingsWindow).EnsureHandle(); }
+        catch (Exception ex) { Log.Warn($"EnsureHandle failed (non-fatal): {ex.Message}"); }
         _overlay = new RecordingOverlay();
 
         if (_settings.ShowTrayIcon && !noTray)
