@@ -243,7 +243,7 @@ public partial class App : Application
         try
         {
             if (_settings.VadEnabled && _vad is not null && _vad.IsReady)
-                samples = _vad.Trim(samples, _settings.VadThreshold, _settings.VadPaddingMs);
+                samples = _vad.Smooth(samples, _settings.VadThreshold);
 
             var text = await _asr!.TranscribeAsync(samples);
             if (_settings.AppendTrailingSpace && !string.IsNullOrEmpty(text))

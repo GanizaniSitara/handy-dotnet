@@ -130,5 +130,152 @@ public sealed class SileroVadService : IDisposable
         return trimmed;
     }
 
+    /// <summary>
+    /// Streaming-style trim that drops silence both at the edges AND in the
+    /// middle of the clip. Mirrors upstream Handy's <c>SmoothedVad</c>
+    /// (audio_toolkit/vad/smoothed.rs): a small state machine with onset
+    /// confirmation, a hangover tail, and a rolling prefill buffer. When
+    /// speech onsets, the prefill window is flushed first so the model still
+    /// sees a few hundred ms of context before the first detected voice frame.
+    ///
+    /// Use this for the live recording path. <see cref="Trim"/> is the older
+    /// "first..last + padding" behaviour kept for the --transcribe-file
+    /// one-shot, where mid-clip pauses are part of the asset and shouldn't
+    /// be removed.
+    /// </summary>
+    public float[] Smooth(
+        float[] samples,
+        double threshold = 0.5,
+        int prefillFrames = 14,
+        int hangoverFrames = 14,
+        int onsetFrames = 2)
+    {
+        if (_session is null || samples.Length < FrameSize * 2) return samples;
+        if (prefillFrames  < 0) prefillFrames  = 0;
+        if (hangoverFrames < 0) hangoverFrames = 0;
+        if (onsetFrames    < 1) onsetFrames    = 1;
+
+        var state = new float[2 * 1 * StateHidden];
+        var context = new float[ContextSize];
+        var srTensor = new DenseTensor<long>(new[] { (long)SampleRate }, Array.Empty<int>());
+        var framedInput = new float[ContextSize + FrameSize];
+
+        int frameCount = samples.Length / FrameSize;
+        var output = new List<float>(samples.Length);
+        var prefill = new Queue<int>(prefillFrames + 1);
+
+        int onsetCounter = 0;
+        int hangoverCounter = 0;
+        bool inSpeech = false;
+        int speechFrames = 0;
+        int noiseFrames = 0;
+        float maxProb = 0f;
+
+        for (int f = 0; f < frameCount; f++)
+        {
+            Array.Copy(context, 0,             framedInput, 0,           ContextSize);
+            Array.Copy(samples, f * FrameSize, framedInput, ContextSize, FrameSize);
+
+            var input = new DenseTensor<float>(framedInput, new[] { 1, ContextSize + FrameSize });
+            var stIn  = new DenseTensor<float>(state,       new[] { 2, 1, StateHidden });
+
+            var inputs = new List<NamedOnnxValue>
+            {
+                NamedOnnxValue.CreateFromTensor("input", input),
+                NamedOnnxValue.CreateFromTensor("sr",    srTensor),
+                NamedOnnxValue.CreateFromTensor("state", stIn),
+            };
+
+            using var results = _session.Run(inputs);
+            var byName = results.ToDictionary(v => v.Name);
+            var prob   = byName["output"].AsTensor<float>().ToArray()[0];
+            state      = byName["stateN"].AsTensor<float>().ToArray();
+
+            Array.Copy(samples, f * FrameSize + FrameSize - ContextSize, context, 0, ContextSize);
+
+            if (prob > maxProb) maxProb = prob;
+            var isVoice = prob >= threshold;
+
+            // Buffer every frame for possible pre-roll on the next onset.
+            prefill.Enqueue(f);
+            while (prefill.Count > prefillFrames + 1) prefill.Dequeue();
+
+            switch ((inSpeech, isVoice))
+            {
+                // Potential start of speech — wait for `onsetFrames` consecutive
+                // voice frames before flipping into speech mode. This rejects
+                // single-frame spikes (cough, click) that aren't real speech.
+                case (false, true):
+                    onsetCounter++;
+                    if (onsetCounter >= onsetFrames)
+                    {
+                        inSpeech = true;
+                        hangoverCounter = hangoverFrames;
+                        onsetCounter = 0;
+                        // Flush the prefill window so the transcriber sees the
+                        // ~prefillFrames * 32 ms of audio that immediately
+                        // preceded the first confirmed speech frame.
+                        foreach (var pf in prefill)
+                            AppendFrame(output, samples, pf);
+                        speechFrames += prefill.Count;
+                    }
+                    else
+                    {
+                        noiseFrames++;
+                    }
+                    break;
+
+                // Continuing speech — refresh the hangover counter so brief
+                // single-frame dips don't break the segment.
+                case (true, true):
+                    hangoverCounter = hangoverFrames;
+                    AppendFrame(output, samples, f);
+                    speechFrames++;
+                    break;
+
+                // In speech but the current frame is silence. Keep emitting
+                // until hangover expires; then close the segment. The next
+                // (false, true) transition will reopen it with fresh prefill.
+                case (true, false):
+                    if (hangoverCounter > 0)
+                    {
+                        hangoverCounter--;
+                        AppendFrame(output, samples, f);
+                        speechFrames++;
+                    }
+                    else
+                    {
+                        inSpeech = false;
+                        noiseFrames++;
+                    }
+                    break;
+
+                // Silence — reset onset accumulator so non-consecutive voice
+                // frames can't sneak past the onset threshold.
+                case (false, false):
+                    onsetCounter = 0;
+                    noiseFrames++;
+                    break;
+            }
+        }
+
+        if (output.Count == 0)
+        {
+            Log.Info($"VAD smooth: no speech detected (threshold={threshold:F2}, maxProb={maxProb:F3}); passing audio through.");
+            return samples;
+        }
+
+        var arr = output.ToArray();
+        Log.Info($"VAD smooth: {samples.Length} → {arr.Length} samples (speech={speechFrames}, noise={noiseFrames} frames; threshold={threshold:F2}, prefill={prefillFrames}, hangover={hangoverFrames}, onset={onsetFrames}).");
+        return arr;
+    }
+
+    private static void AppendFrame(List<float> output, float[] samples, int frameIndex)
+    {
+        var start = frameIndex * FrameSize;
+        for (int i = 0; i < FrameSize; i++)
+            output.Add(samples[start + i]);
+    }
+
     public void Dispose() => _session?.Dispose();
 }
