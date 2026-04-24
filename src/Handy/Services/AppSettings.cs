@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -64,6 +65,14 @@ public sealed class AppSettings
     public int PostRollMs { get; set; } = 200;
 
     public int HistoryLimit { get; set; } = 50;
+
+    /// <summary>App language code for post-transcription filler-word removal ("en", "pt-BR", …).
+    /// Matches upstream Handy's app language — selects which filler words get stripped.</summary>
+    public string AppLanguage { get; set; } = "en";
+
+    /// <summary>Custom filler-word list. null = use language defaults (upstream behaviour);
+    /// empty list = disable filler-word removal entirely; non-empty list = use exactly these words.</summary>
+    public List<string>? CustomFillerWords { get; set; } = null;
 
     [JsonIgnore]
     public string FilePath { get; private set; } = string.Empty;

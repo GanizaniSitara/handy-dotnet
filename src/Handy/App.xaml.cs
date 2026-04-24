@@ -245,7 +245,10 @@ public partial class App : Application
             if (_settings.VadEnabled && _vad is not null && _vad.IsReady)
                 samples = _vad.Smooth(samples, _settings.VadThreshold);
 
-            var text = await _asr!.TranscribeAsync(samples);
+            var raw = await _asr!.TranscribeAsync(samples);
+            var text = Services.TranscriptFilter.Filter(raw, _settings.AppLanguage, _settings.CustomFillerWords);
+            if (raw != text)
+                Log.Info($"Filter: \"{raw}\" -> \"{text}\"");
             if (_settings.AppendTrailingSpace && !string.IsNullOrEmpty(text))
                 text += ' ';
             Log.Info($"Transcript: {text}");
@@ -367,9 +370,11 @@ public partial class App : Application
             if (vad.IsReady)
                 samples = vad.Trim(samples);
 
-            var text = asr.TranscribeAsync(samples).GetAwaiter().GetResult();
-            Log.Info($"--transcribe-file: {text}");
-            File.WriteAllText(outPath, text ?? string.Empty);
+            var raw = asr.TranscribeAsync(samples).GetAwaiter().GetResult();
+            var settings = AppSettings.Load(dataDir);
+            var text = Services.TranscriptFilter.Filter(raw ?? string.Empty, settings.AppLanguage, settings.CustomFillerWords);
+            Log.Info($"--transcribe-file: raw=\"{raw}\" filtered=\"{text}\"");
+            File.WriteAllText(outPath, text);
         }
         catch (Exception ex)
         {
