@@ -246,9 +246,11 @@ public partial class App : Application
                 samples = _vad.Smooth(samples, _settings.VadThreshold);
 
             var raw = await _asr!.TranscribeAsync(samples);
+            Log.Info($"Raw: \"{raw}\"");
             var text = Services.TranscriptFilter.Filter(raw, _settings.AppLanguage, _settings.CustomFillerWords);
-            if (raw != text)
-                Log.Info($"Filter: \"{raw}\" -> \"{text}\"");
+            Log.Info(raw == text
+                ? $"Filter: (no change) lang={_settings.AppLanguage}"
+                : $"Filter: \"{raw}\" -> \"{text}\" (lang={_settings.AppLanguage})");
             if (_settings.AppendTrailingSpace && !string.IsNullOrEmpty(text))
                 text += ' ';
             Log.Info($"Transcript: {text}");
