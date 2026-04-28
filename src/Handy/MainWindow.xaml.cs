@@ -83,9 +83,10 @@ public partial class MainWindow : Window
             BeepVolumeSlider.Value     = Math.Clamp(_settings.BeepVolume, 0, 1);
             BeepVolumePct.Text         = $"{(int)(BeepVolumeSlider.Value * 100)}%";
 
-            VadCheck.IsChecked      = _settings.VadEnabled;
-            VadThresholdBox.Text    = _settings.VadThreshold.ToString("F2", CultureInfo.InvariantCulture);
-            VadPaddingBox.Text      = _settings.VadPaddingMs.ToString();
+            VadCheck.IsChecked         = _settings.VadEnabled;
+            VadThresholdBox.Text       = _settings.VadThreshold.ToString("F2", CultureInfo.InvariantCulture);
+            VadPaddingBox.Text         = _settings.VadPaddingMs.ToString();
+            VadMaxSilenceMsBox.Text    = _settings.VadMaxSilenceMs.ToString();
 
             AutostartCheck.IsChecked   = _settings.Autostart;
             StartHiddenCheck.IsChecked = _settings.StartHidden;
@@ -160,6 +161,8 @@ public partial class MainWindow : Window
             _settings.VadThreshold = th;
         if (int.TryParse(VadPaddingBox.Text, out var pad) && pad is >= 0 and <= 2000)
             _settings.VadPaddingMs = pad;
+        if (int.TryParse(VadMaxSilenceMsBox.Text, out var gap) && gap is >= 500 and <= 120_000)
+            _settings.VadMaxSilenceMs = gap;
 
         _settings.Autostart    = AutostartCheck.IsChecked == true;
         _settings.StartHidden  = StartHiddenCheck.IsChecked == true;

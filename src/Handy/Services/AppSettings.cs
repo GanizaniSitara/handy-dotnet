@@ -58,6 +58,11 @@ public sealed class AppSettings
     public double VadThreshold { get; set; } = 0.3;
     public int VadPaddingMs { get; set; } = 200;
 
+    /// <summary>Maximum mid-recording silence gap (ms) before VAD closes the speech segment.
+    /// Set high enough to cover the longest thinking pause you'd ever make in one utterance.
+    /// Default 30 000 ms (30 s) — effectively unlimited for normal dictation use.</summary>
+    public int VadMaxSilenceMs { get; set; } = 30_000;
+
     /// <summary>Extra audio included from BEFORE the hotkey press. Catches the first syllable.</summary>
     public int PreRollMs { get; set; } = 250;
 

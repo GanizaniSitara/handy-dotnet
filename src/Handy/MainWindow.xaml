@@ -124,6 +124,17 @@
                             <TextBlock Grid.Column="6" Text="Padding (ms)" Style="{StaticResource LabelCell}"/>
                             <TextBox   Grid.Column="7" x:Name="VadPaddingBox"/>
                         </Grid>
+                        <Grid Margin="{StaticResource RowMargin}">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="170"/>
+                                <ColumnDefinition Width="12"/>
+                                <ColumnDefinition Width="120"/>
+                                <ColumnDefinition Width="80"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="2" Text="Max gap (ms)" Style="{StaticResource LabelCell}"
+                                       ToolTip="Longest mid-recording pause VAD will tolerate before closing the speech segment. Raise this if long thinking pauses cause the second half of your utterance to be dropped. Default: 30000 (30 s)."/>
+                            <TextBox   Grid.Column="3" x:Name="VadMaxSilenceMsBox"/>
+                        </Grid>
                     </StackPanel>
                 </ScrollViewer>
             </TabItem>
