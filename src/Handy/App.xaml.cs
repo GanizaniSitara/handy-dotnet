@@ -243,7 +243,13 @@ public partial class App : Application
         try
         {
             if (_settings.VadEnabled && _vad is not null && _vad.IsReady)
-                samples = _vad.Smooth(samples, _settings.VadThreshold);
+            {
+                // Convert the user-configured max-silence gap (ms) to frames.
+                // SileroVadService uses 512-sample frames at 16 kHz = 32 ms/frame.
+                const int MsPerFrame = 32;
+                var hangoverFrames = Math.Max(14, _settings.VadMaxSilenceMs / MsPerFrame);
+                samples = _vad.Smooth(samples, _settings.VadThreshold, hangoverFrames: hangoverFrames);
+            }
 
             var raw = await _asr!.TranscribeAsync(samples);
             Log.Info($"Raw: \"{raw}\"");
