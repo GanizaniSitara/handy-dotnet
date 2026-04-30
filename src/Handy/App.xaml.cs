@@ -244,11 +244,9 @@ public partial class App : Application
         {
             if (_settings.VadEnabled && _vad is not null && _vad.IsReady)
             {
-                // Convert the user-configured max-silence gap (ms) to frames.
-                // SileroVadService uses 512-sample frames at 16 kHz = 32 ms/frame.
-                const int MsPerFrame = 32;
-                var hangoverFrames = Math.Max(14, _settings.VadMaxSilenceMs / MsPerFrame);
-                samples = _vad.Smooth(samples, _settings.VadThreshold, hangoverFrames: hangoverFrames);
+                // Trim leading/trailing silence only — Smooth() was previously used here
+                // but it removes mid-clip silence, severing transcription context across pauses.
+                samples = _vad.Trim(samples, _settings.VadThreshold, _settings.VadPaddingMs);
             }
 
             var raw = await _asr!.TranscribeAsync(samples);
