@@ -263,6 +263,28 @@
             <TabItem Header="Models">
                 <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="12">
                     <StackPanel>
+                        <TextBlock Text="TRANSCRIPTION ENGINE" FontWeight="SemiBold" Foreground="#555" Margin="0,0,0,6"/>
+                        <Grid Margin="{StaticResource RowMargin}">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="170"/>
+                                <ColumnDefinition Width="130"/>
+                                <ColumnDefinition Width="80"/>
+                                <ColumnDefinition Width="100"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="Backend" Style="{StaticResource LabelCell}"/>
+                            <ComboBox Grid.Column="1" x:Name="TranscriptionBackendCombo">
+                                <ComboBoxItem Content="Parakeet"/>
+                                <ComboBoxItem Content="Whisper"/>
+                            </ComboBox>
+                            <TextBlock Grid.Column="2" Text="Whisper" Style="{StaticResource LabelCell}" Margin="12,0,0,0"/>
+                            <ComboBox Grid.Column="3" x:Name="WhisperModelCombo">
+                                <ComboBoxItem Content="tiny"/>
+                                <ComboBoxItem Content="base"/>
+                                <ComboBoxItem Content="small"/>
+                            </ComboBox>
+                        </Grid>
+
                         <TextBlock Text="ACTIVE MODEL" FontWeight="SemiBold" Foreground="#555" Margin="0,0,0,6"/>
                         <TextBlock x:Name="ModelPathText" TextTrimming="CharacterEllipsis" Foreground="#444" Margin="0,0,0,12"/>
 
@@ -280,6 +302,22 @@
                             Parakeet V2 is English-only (~475 MB). V3 is multilingual (~478 MB). The port
                             auto-discovers models placed in %APPDATA%\Handy\models\ or the upstream cache
                             at %APPDATA%\com.pais.handy\models\.
+                        </TextBlock>
+
+                        <TextBlock Text="DOWNLOAD WHISPER" FontWeight="SemiBold" Foreground="#555" Margin="0,16,0,6"/>
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                            <TextBlock Text="Model:" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                            <ComboBox x:Name="DownloadWhisperModelCombo" Width="80" SelectedIndex="1">
+                                <ComboBoxItem Content="tiny"/>
+                                <ComboBoxItem Content="base"/>
+                                <ComboBoxItem Content="small"/>
+                            </ComboBox>
+                            <Button x:Name="DownloadWhisperButton" Content="Download" Width="100" Margin="8,0,8,0" Click="OnDownloadWhisperModel"/>
+                            <TextBlock x:Name="DownloadWhisperStatus" VerticalAlignment="Center" Foreground="#666"/>
+                        </StackPanel>
+                        <TextBlock TextWrapping="Wrap" Style="{StaticResource Hint}">
+                            Whisper.net uses GGML/whisper.cpp models. Handy stores them under
+                            %APPDATA%\Handy\models\whisper\ as ggml-tiny.bin, ggml-base.bin, or ggml-small.bin.
                         </TextBlock>
                     </StackPanel>
                 </ScrollViewer>

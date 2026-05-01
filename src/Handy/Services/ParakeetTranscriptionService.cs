@@ -21,7 +21,7 @@ namespace Handy.Services;
 /// deliberately NOT consumed — transcribe-rs ignores it too; layering that on is
 /// a future improvement.
 /// </summary>
-public sealed class ParakeetTranscriptionService : IDisposable
+public sealed class ParakeetTranscriptionService : ITranscriptionService
 {
     private const int MaxSymbolsPerStep = 10;
     private const int SampleRate = 16000;

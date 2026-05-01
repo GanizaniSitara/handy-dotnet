@@ -5,6 +5,8 @@ using System.IO.Compression;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
+using Whisper.net;
+using Whisper.net.Ggml;
 
 namespace Handy.Services;
 
@@ -58,6 +60,55 @@ public sealed class ModelDownloadService
         progress?.Report(new Progress("Done", 1.0, 0, null));
         Log.Info($"Model {variant} ready at {targetDir}");
         return targetDir;
+    }
+
+    public static async Task<string> DownloadWhisperAsync(
+        string whisperModelsDir,
+        string modelName,
+        IProgress<Progress>? progress,
+        CancellationToken ct)
+    {
+        Directory.CreateDirectory(whisperModelsDir);
+
+        var normalized = WhisperTranscriptionService.NormalizeModelName(modelName);
+        var targetPath = WhisperTranscriptionService.ModelPathFor(whisperModelsDir, normalized);
+        if (File.Exists(targetPath))
+        {
+            var length = new FileInfo(targetPath).Length;
+            progress?.Report(new Progress("Done", 1.0, length, length));
+            return targetPath;
+        }
+
+        var tmpPath = targetPath + ".download";
+        progress?.Report(new Progress("Downloading", 0, 0, null));
+
+        using var modelStream = await WhisperGgmlDownloader.Default
+            .GetGgmlModelAsync(WhisperTranscriptionService.GgmlTypeFor(normalized))
+            .ConfigureAwait(false);
+        using var fileWriter = new FileStream(tmpPath, FileMode.Create, FileAccess.Write, FileShare.None, 64 * 1024, useAsync: true);
+
+        var buffer = new byte[64 * 1024];
+        long read = 0;
+        int n;
+        var lastReport = DateTime.UtcNow;
+        while ((n = await modelStream.ReadAsync(buffer.AsMemory(0, buffer.Length), ct).ConfigureAwait(false)) > 0)
+        {
+            await fileWriter.WriteAsync(buffer.AsMemory(0, n), ct).ConfigureAwait(false);
+            read += n;
+            if ((DateTime.UtcNow - lastReport).TotalMilliseconds > 150)
+            {
+                progress?.Report(new Progress("Downloading", 0, read, null));
+                lastReport = DateTime.UtcNow;
+            }
+        }
+
+        fileWriter.Close();
+        if (File.Exists(targetPath)) File.Delete(targetPath);
+        File.Move(tmpPath, targetPath);
+
+        progress?.Report(new Progress("Done", 1.0, read, read));
+        Log.Info($"Whisper {normalized} model ready at {targetPath}");
+        return targetPath;
     }
 
     private static async Task DownloadFileAsync(

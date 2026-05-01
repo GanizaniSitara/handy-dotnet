@@ -15,9 +15,10 @@ A native Windows .NET 8 port of the excellent
 > use upstream and support that project.
 
 Same UX as upstream — global hotkey → local speech-to-text → pasted into the
-active window. Same model too: NVIDIA NeMo Parakeet TDT via ONNX Runtime,
-reading the same `parakeet-tdt-0.6b-v*-int8/` directory layout upstream ships.
-Settings file, history, and on-disk models are cross-compatible.
+active window. Parakeet remains the default backend, reading the same
+`parakeet-tdt-0.6b-v*-int8/` directory layout upstream ships. Whisper is also
+available as a local GGML/whisper.cpp backend through Whisper.net.
+Settings file, history, and on-disk Parakeet models are cross-compatible.
 
 **Upstream stack:** Rust + Tauri + WebView2 + React frontend + `transcribe-rs`.
 **This port:** .NET 8 WPF + NAudio + Microsoft.ML.OnnxRuntime.
@@ -36,16 +37,24 @@ The port keeps the upstream feature set while building on the standard
 - WPF runs on the in-box `Microsoft.WindowsDesktop.App` runtime and publishes as a plain unpackaged `.exe`. WinUI 3 requires the Windows App SDK bootstrapper and MSIX packaging, which adds runtime prerequisites we preferred to avoid.
 - WPF hosts the WinForms `NotifyIcon` tray directly via `UseWindowsForms=true`, so no third-party tray package.
 
-## Transcription backend: Parakeet via ONNX Runtime
+## Transcription backends
 
 Upstream Handy supports two backends: Whisper (GGML) and NVIDIA NeMo Parakeet
-TDT (ONNX). **This port implements the Parakeet path** — same model directory
-layout, same int8 quantized weights, same 16 kHz mono input, same greedy
-RNN-T decoding that transcribe-rs uses. That means:
+TDT (ONNX). This port supports both, with `TranscriptionBackend` in
+`%APPDATA%\Handy\settings.json` selecting `"Parakeet"` or `"Whisper"`.
+Parakeet is the default.
+
+The Parakeet path uses the same model directory layout, same int8 quantized
+weights, same 16 kHz mono input, and same greedy RNN-T decoding that
+transcribe-rs uses. That means:
 
 - Reuse of the exact model files already cached by upstream Handy on the same machine.
 - No audio round-trip through a separate Python/Rust/GPU stack.
 - ~500 ms inference for ~10 s of audio on CPU (one thread) with the V2 int8 model.
+
+The Whisper path uses Whisper.net/whisper.cpp with GGML models. Set
+`WhisperModel` to `"tiny"`, `"base"`, or `"small"`; models live under
+`%APPDATA%\Handy\models\whisper\` as `ggml-{model}.bin`.
 
 Pipeline summary:
 
@@ -72,7 +81,8 @@ greedy loop → token ids → vocab.txt → text
   .\dotnet-install.ps1 -Channel 8.0 -Quality GA -InstallDir $env:USERPROFILE\.dotnet
   ```
   …then call `%USERPROFILE%\.dotnet\dotnet.exe` directly, or add that folder to `PATH`.
-- **A Parakeet model directory** — see below.
+- **A model** — Parakeet by default; Whisper models can be downloaded from the
+  Models tab or pulled on first run when the Whisper backend is selected.
 
 ### From the CLI
 
@@ -118,6 +128,22 @@ parakeet-tdt-0.6b-v2-int8/
 
 Direct download URLs are in the upstream README (`https://blob.handy.computer/parakeet-v{2,3}-int8.tar.gz`); extract the archive into `%APPDATA%\Handy\models\`.
 
+## Whisper model
+
+Set `TranscriptionBackend` to `"Whisper"` in settings or use the Models tab.
+The selectable sizes are `"tiny"`, `"base"`, and `"small"`; the default is
+`"base"`. Handy stores these files at:
+
+```
+%APPDATA%\Handy\models\whisper\ggml-tiny.bin
+%APPDATA%\Handy\models\whisper\ggml-base.bin
+%APPDATA%\Handy\models\whisper\ggml-small.bin
+```
+
+The Models tab can download them through Whisper.net. If the selected file is
+missing at startup, Handy marks the Whisper backend as not ready; use the
+Download button or place the file manually, then apply the setting again.
+
 ## Usage
 
 1. Run `Handy.exe`. A tray icon appears. Default hotkey: **Ctrl + Alt + Space**.
@@ -154,9 +180,12 @@ App.xaml.cs
  ├─ SingleInstance               named mutex + pipe for CLI forwarding
  ├─ LowLevelKeyHookService       WH_KEYBOARD_LL for rebindable hotkey + PTT
  ├─ AudioCaptureService          NAudio WaveInEvent, 16 kHz mono 16-bit
+ ├─ ITranscriptionService        shared ASR contract selected by settings
  ├─ ParakeetTranscriptionService ONNX Runtime: preproc / encoder / decoder+joiner
  │    ├─ ParakeetTokenizer       vocab.txt + ▁-to-space + post-process regex
- │    └─ WavIo                   file-mode WAV loader with auto-conversion
+ ├─ WhisperTranscriptionService  Whisper.net / whisper.cpp GGML backend
+ ├─ ModelDownloadService         Parakeet tarballs + Whisper GGML downloads
+ ├─ WavIo                        file-mode WAV loader with auto-conversion
  ├─ TextInjectionService         Clipboard + SendInput (CtrlV / ShiftInsert / CtrlShiftV / Direct)
  ├─ AudioFeedbackService         start/stop/cancel beeps (NAudio SignalGenerator)
  ├─ HistoryService               JSON-backed bounded transcript history
@@ -187,11 +216,11 @@ Implemented:
 - Autostart on login (HKCU Run key).
 - Single-instance with `--toggle-transcription`, `--cancel`, `--show` forwarding.
 - Transcript history persisted to JSON.
+- VAD (Silero) trim before transcription.
+- Whisper transcription via Whisper.net (tiny/base/small GGML).
 
 Deferred:
-- VAD (Silero) trim before transcription.
 - Proper TDT duration-head consumption (matches transcribe-rs behaviour — vocab logits only).
-- Model download manager in-app (users copy in manually or reuse upstream's cache).
 - Post-process via OpenAI-compatible LLM.
 - Rich history UI.
 - Theme-aware tray icons.
@@ -208,6 +237,8 @@ first.
   [@cjpais](https://github.com/cjpais) and contributors.
 - **Models:** NVIDIA NeMo Parakeet TDT (CC-BY-4.0), hosted by upstream at
   `https://blob.handy.computer/parakeet-v{2,3}-int8.tar.gz`.
+- **Whisper backend:** [Whisper.net](https://github.com/sandrohanea/whisper.net)
+  and [whisper.cpp](https://github.com/ggml-org/whisper.cpp).
 - **VAD:** [snakers4/silero-vad](https://github.com/snakers4/silero-vad) (MIT).
 - **ONNX Runtime:** Microsoft (MIT).
 - **NAudio:** [Mark Heath](https://github.com/naudio/NAudio) (MIT).

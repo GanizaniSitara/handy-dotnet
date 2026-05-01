@@ -93,6 +93,10 @@ public partial class MainWindow : Window
             ShowTrayCheck.IsChecked    = _settings.ShowTrayIcon;
 
             HistoryLimitBox.Text = _settings.HistoryLimit.ToString();
+
+            SelectComboByContent(TranscriptionBackendCombo, _settings.TranscriptionBackend);
+            SelectComboByContent(WhisperModelCombo, WhisperTranscriptionService.NormalizeModelName(_settings.WhisperModel));
+            SelectComboByContent(DownloadWhisperModelCombo, WhisperTranscriptionService.NormalizeModelName(_settings.WhisperModel));
         }
         finally { _loading = false; }
     }
@@ -170,6 +174,9 @@ public partial class MainWindow : Window
 
         if (int.TryParse(HistoryLimitBox.Text, out var hl) && hl is >= 1 and <= 1000)
             _settings.HistoryLimit = hl;
+
+        _settings.TranscriptionBackend = (string?)((ComboBoxItem)TranscriptionBackendCombo.SelectedItem)?.Content ?? "Parakeet";
+        _settings.WhisperModel = (string?)((ComboBoxItem)WhisperModelCombo.SelectedItem)?.Content ?? "base";
 
         ((App)Application.Current).ReloadSettings();
         Log.Info("Settings applied.");
@@ -309,6 +316,44 @@ public partial class MainWindow : Window
         finally
         {
             DownloadButton.IsEnabled = true;
+        }
+    }
+
+    private async void OnDownloadWhisperModel(object sender, RoutedEventArgs e)
+    {
+        var model = (string?)((ComboBoxItem)DownloadWhisperModelCombo.SelectedItem)?.Content ?? "base";
+
+        var dataDir = System.IO.Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Handy");
+        var whisperDir = System.IO.Path.Combine(dataDir, "models", "whisper");
+
+        DownloadWhisperButton.IsEnabled = false;
+        DownloadWhisperStatus.Text = $"Starting {model} download...";
+
+        var progress = new Progress<ModelDownloadService.Progress>(p =>
+        {
+            var mb = p.TotalBytes.HasValue && p.TotalBytes.Value > 0
+                ? $"{p.BytesSoFar / (1024.0 * 1024.0):F1} / {p.TotalBytes.Value / (1024.0 * 1024.0):F1} MB"
+                : $"{p.BytesSoFar / (1024.0 * 1024.0):F1} MB";
+            DownloadWhisperStatus.Text = $"{p.Phase}: {mb}";
+        });
+
+        try
+        {
+            var path = await System.Threading.Tasks.Task.Run(async () =>
+                await ModelDownloadService.DownloadWhisperAsync(whisperDir, model, progress,
+                    System.Threading.CancellationToken.None));
+            DownloadWhisperStatus.Text = $"Installed to {path}";
+            ModelPathText.Text = path;
+        }
+        catch (Exception ex)
+        {
+            DownloadWhisperStatus.Text = $"Download failed: {ex.Message}";
+            Log.Error($"Whisper model download failed: {ex}");
+        }
+        finally
+        {
+            DownloadWhisperButton.IsEnabled = true;
         }
     }
 
