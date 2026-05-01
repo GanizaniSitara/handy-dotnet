@@ -71,6 +71,12 @@ public sealed class AppSettings
 
     public int HistoryLimit { get; set; } = 50;
 
+    /// <summary>Parakeet | Whisper. Parakeet remains the default for existing installs.</summary>
+    public string TranscriptionBackend { get; set; } = "Parakeet";
+
+    /// <summary>tiny | base | small. Used only when TranscriptionBackend = Whisper.</summary>
+    public string WhisperModel { get; set; } = "base";
+
     /// <summary>App language code for post-transcription filler-word removal ("en", "pt-BR", …).
     /// Matches upstream Handy's app language — selects which filler words get stripped.</summary>
     public string AppLanguage { get; set; } = "en";

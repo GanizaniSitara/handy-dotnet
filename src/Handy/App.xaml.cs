@@ -12,7 +12,7 @@ public partial class App : Application
     private TrayIconManager?         _tray;
     private LowLevelKeyHookService?  _hook;
     private AudioCaptureService?     _audio;
-    private ParakeetTranscriptionService? _asr;
+    private ITranscriptionService?     _asr;
     private SileroVadService?        _vad;
     private TextInjectionService?    _injector;
     private AudioFeedbackService?    _feedback;
@@ -21,12 +21,16 @@ public partial class App : Application
     private RecordingOverlay?        _overlay;
     private AppSettings              _settings = new();
     private string                   _dataDir = string.Empty;
+    private string                   _parakeetModelDir = string.Empty;
+    private string                   _activeBackend = "Parakeet";
+    private string                   _activeWhisperModel = "base";
 
     private bool _recording;
     private bool _cancelled;
+    private bool _transcribing;
 
     internal AppSettings Settings => _settings;
-    internal ParakeetTranscriptionService? Asr => _asr;
+    internal ITranscriptionService? Asr => _asr;
     internal HistoryService? History => _history;
 
     private void OnStartup(object sender, StartupEventArgs e)
@@ -53,14 +57,14 @@ public partial class App : Application
         _settings = AppSettings.Load(_dataDir);
         AutostartService.Apply(_settings.Autostart);
 
-        var modelDir = ResolveModelDir(_dataDir);
+        _parakeetModelDir = ResolveModelDir(_dataDir);
 
         // --transcribe-file <path>: skip the UI, transcribe the file, write
         // the result to %APPDATA%\Handy\last-transcript.txt, exit.
         var fileIndex = Array.IndexOf(e.Args, "--transcribe-file");
         if (fileIndex >= 0 && fileIndex + 1 < e.Args.Length)
         {
-            RunTranscribeFile(modelDir, e.Args[fileIndex + 1], _dataDir);
+            RunTranscribeFile(e.Args[fileIndex + 1], _dataDir);
             Shutdown();
             return;
         }
@@ -70,7 +74,9 @@ public partial class App : Application
         var noTray = e.Args.Any(a => a == "--no-tray");
         var showWindow = e.Args.Any(a => a == "--show");
 
-        _asr = new ParakeetTranscriptionService(modelDir);
+        _asr = CreateTranscriptionService(_settings, _dataDir, _parakeetModelDir);
+        _activeBackend = NormalizeBackend(_settings.TranscriptionBackend);
+        _activeWhisperModel = WhisperTranscriptionService.NormalizeModelName(_settings.WhisperModel);
         _vad = new SileroVadService(Path.Combine(_dataDir, "models", "silero_vad.onnx"));
         _audio = new AudioCaptureService(_settings.MicrophoneDeviceName);
         _audio.OnLevels += levels => _overlay?.SetLevels(levels);
@@ -80,7 +86,7 @@ public partial class App : Application
         _history = new HistoryService(_dataDir, _settings.HistoryLimit);
 
         _settingsWindow = new MainWindow();
-        _settingsWindow.SetModelPath(modelDir);
+        _settingsWindow.SetModelPath(DescribeActiveModelPath(_settings, _dataDir, _parakeetModelDir));
         // Force HWND creation up-front so the process has a live top-level
         // window even in tray-only mode. Without this, Windows' foreground
         // eligibility rules filter SendInput deliveries into apps that run
@@ -112,7 +118,7 @@ public partial class App : Application
         // Listen for CLI-forwarded signals from the single-instance gate.
         SingleInstance.OnSignal += HandleSignal;
 
-        Log.Info($"Handy started. Model dir: {(_asr.IsReady ? modelDir : "NOT FOUND — see README")}");
+        Log.Info($"Handy started. Backend={_activeBackend} model={(_asr.IsReady ? DescribeActiveModelPath(_settings, _dataDir, _parakeetModelDir) : "NOT FOUND — see README")}");
         Log.Info($"PTT={_settings.PushToTalk} Paste={_settings.PasteMethod} Autostart={_settings.Autostart}");
 
         var shouldStartHidden = _settings.StartHidden || startHiddenOverride;
@@ -138,6 +144,7 @@ public partial class App : Application
     internal void ReloadSettings()
     {
         // Caller has already mutated _settings; just re-apply side effects.
+        ReloadTranscriptionServiceIfNeeded();
         _hook?.Configure(Hotkey.Parse(_settings.Hotkey), Hotkey.Parse(_settings.CancelHotkey));
         AutostartService.Apply(_settings.Autostart);
         _feedback?.UpdateSettings(_settings);
@@ -207,7 +214,7 @@ public partial class App : Application
         if (_asr is null || !_asr.IsReady)
         {
             Log.Warn("Model not loaded; cannot start recording.");
-            _tray?.Notify("Handy", "Parakeet model missing. See README.");
+            _tray?.Notify("Handy", $"{NormalizeBackend(_settings.TranscriptionBackend)} model missing. See README.");
             return;
         }
         _recording = true;
@@ -240,6 +247,7 @@ public partial class App : Application
 
         _feedback?.PlayStop();
         SetUiState(isRecording: false, isTranscribing: true, hideOverlay: false);
+        _transcribing = true;
         try
         {
             if (_settings.VadEnabled && _vad is not null && _vad.IsReady)
@@ -249,7 +257,10 @@ public partial class App : Application
                 samples = _vad.Trim(samples, _settings.VadThreshold, _settings.VadPaddingMs);
             }
 
-            var raw = await _asr!.TranscribeAsync(samples);
+            var asr = _asr;
+            if (asr is null || !asr.IsReady) throw new InvalidOperationException("Transcription model not loaded.");
+
+            var raw = await asr.TranscribeAsync(samples);
             Log.Info($"Raw: \"{raw}\"");
             var text = Services.TranscriptFilter.Filter(raw, _settings.AppLanguage, _settings.CustomFillerWords);
             Log.Info(raw == text
@@ -275,6 +286,7 @@ public partial class App : Application
         }
         finally
         {
+            _transcribing = false;
             SetUiState(isRecording: false, isTranscribing: false, hideOverlay: true);
         }
     }
@@ -349,7 +361,35 @@ public partial class App : Application
         }));
     }
 
-    private static void RunTranscribeFile(string modelDir, string wavPath, string dataDir)
+    private void ReloadTranscriptionServiceIfNeeded()
+    {
+        var backend = NormalizeBackend(_settings.TranscriptionBackend);
+        var whisperModel = WhisperTranscriptionService.NormalizeModelName(_settings.WhisperModel);
+        _settings.TranscriptionBackend = backend;
+        _settings.WhisperModel = whisperModel;
+
+        if (string.Equals(backend, _activeBackend, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(whisperModel, _activeWhisperModel, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        if (_recording || _transcribing)
+        {
+            Log.Warn("Transcription backend changed while busy; saved setting will take effect after recording/transcription finishes and settings are applied again.");
+            return;
+        }
+
+        var old = _asr;
+        _asr = CreateTranscriptionService(_settings, _dataDir, _parakeetModelDir);
+        _activeBackend = backend;
+        _activeWhisperModel = whisperModel;
+        old?.Dispose();
+        _settingsWindow?.SetModelPath(DescribeActiveModelPath(_settings, _dataDir, _parakeetModelDir));
+        Log.Info($"Transcription backend switched to {_activeBackend} ({DescribeActiveModelPath(_settings, _dataDir, _parakeetModelDir)})");
+    }
+
+    private static void RunTranscribeFile(string wavPath, string dataDir)
     {
         var outPath = Path.Combine(dataDir, "last-transcript.txt");
         try
@@ -361,10 +401,12 @@ public partial class App : Application
                 return;
             }
 
-            using var asr = new ParakeetTranscriptionService(modelDir);
+            var settings = AppSettings.Load(dataDir);
+            var parakeetModelDir = ResolveModelDir(dataDir);
+            using var asr = CreateTranscriptionService(settings, dataDir, parakeetModelDir);
             if (!asr.IsReady)
             {
-                Log.Error("--transcribe-file: Parakeet models not loaded.");
+                Log.Error($"--transcribe-file: {NormalizeBackend(settings.TranscriptionBackend)} model not loaded.");
                 File.WriteAllText(outPath, "ERROR: models not loaded");
                 return;
             }
@@ -377,7 +419,6 @@ public partial class App : Application
                 samples = vad.Trim(samples);
 
             var raw = asr.TranscribeAsync(samples).GetAwaiter().GetResult();
-            var settings = AppSettings.Load(dataDir);
             var text = Services.TranscriptFilter.Filter(raw ?? string.Empty, settings.AppLanguage, settings.CustomFillerWords);
             Log.Info($"--transcribe-file: raw=\"{raw}\" filtered=\"{text}\"");
             File.WriteAllText(outPath, text);
@@ -421,4 +462,40 @@ public partial class App : Application
         File.Exists(Path.Combine(dir, "encoder-model.int8.onnx")) &&
         File.Exists(Path.Combine(dir, "decoder_joint-model.int8.onnx")) &&
         File.Exists(Path.Combine(dir, "vocab.txt"));
+
+    private static ITranscriptionService CreateTranscriptionService(AppSettings settings, string dataDir, string parakeetModelDir)
+    {
+        var backend = NormalizeBackend(settings.TranscriptionBackend);
+        settings.TranscriptionBackend = backend;
+        settings.WhisperModel = WhisperTranscriptionService.NormalizeModelName(settings.WhisperModel);
+
+        if (string.Equals(backend, "Whisper", StringComparison.OrdinalIgnoreCase))
+        {
+            return new WhisperTranscriptionService(ResolveWhisperModelsDir(dataDir), settings.WhisperModel);
+        }
+
+        return new ParakeetTranscriptionService(parakeetModelDir);
+    }
+
+    private static string NormalizeBackend(string? backend)
+    {
+        return string.Equals(backend?.Trim(), "Whisper", StringComparison.OrdinalIgnoreCase)
+            ? "Whisper"
+            : "Parakeet";
+    }
+
+    private static string ResolveWhisperModelsDir(string dataDir)
+    {
+        return Path.Combine(dataDir, "models", "whisper");
+    }
+
+    private static string DescribeActiveModelPath(AppSettings settings, string dataDir, string parakeetModelDir)
+    {
+        if (string.Equals(NormalizeBackend(settings.TranscriptionBackend), "Whisper", StringComparison.OrdinalIgnoreCase))
+        {
+            return WhisperTranscriptionService.ModelPathFor(ResolveWhisperModelsDir(dataDir), settings.WhisperModel);
+        }
+
+        return parakeetModelDir;
+    }
 }
