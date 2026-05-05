@@ -61,7 +61,7 @@ public sealed class AppSettings
     /// <summary>Trim leading/trailing silence with Silero VAD before transcription.</summary>
     public bool VadEnabled { get; set; } = true;
     public double VadThreshold { get; set; } = 0.3;
-    public int VadPaddingMs { get; set; } = 200;
+    public int VadPaddingMs { get; set; } = 500;
 
     /// <summary>Maximum mid-recording silence gap (ms) before VAD closes the speech segment.
     /// Set high enough to cover the longest thinking pause you'd ever make in one utterance.

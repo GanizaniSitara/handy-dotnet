@@ -60,8 +60,15 @@ public sealed class SileroVadService : IDisposable
     /// <summary>
     /// Trim leading/trailing silence. Returns the original array if VAD is not
     /// loaded or the clip has no detectable speech.
+    ///
+    /// <paramref name="trailingHangoverMs"/> extends <c>lastSpeechFrame</c> through
+    /// up to that many ms of sub-threshold frames after the last clear speech
+    /// frame, so a soft trailing release (the closing consonant of a word the
+    /// speaker trails off on) isn't aggressively cut. Refreshes whenever a
+    /// supra-threshold frame is seen, so mid-utterance pauses still extend
+    /// through to the next speech burst (preserving Trim's "edges only" semantic).
     /// </summary>
-    public float[] Trim(float[] samples, double threshold = 0.5, int paddingMs = 200)
+    public float[] Trim(float[] samples, double threshold = 0.5, int paddingMs = 200, int trailingHangoverMs = 480)
     {
         if (_session is null || samples.Length < FrameSize * 2) return samples;
 
@@ -75,6 +82,10 @@ public sealed class SileroVadService : IDisposable
 
         var srTensor = new DenseTensor<long>(new[] { (long)SampleRate }, Array.Empty<int>()); // scalar
         var framedInput = new float[ContextSize + FrameSize]; // 64 + 512 = 576
+
+        var frameMs = FrameSize * 1000 / SampleRate; // 32 ms
+        var hangoverFrames = Math.Max(0, trailingHangoverMs) / Math.Max(1, frameMs);
+        int hangoverRemaining = 0;
 
         for (int f = 0; f < frameCount; f++)
         {
@@ -107,6 +118,14 @@ public sealed class SileroVadService : IDisposable
             {
                 if (firstSpeechFrame < 0) firstSpeechFrame = f;
                 lastSpeechFrame = f;
+                hangoverRemaining = hangoverFrames;
+            }
+            else if (firstSpeechFrame >= 0 && hangoverRemaining > 0)
+            {
+                // Soft trailing frame: keep extending the tail so the closing
+                // release of a quiet word isn't chopped before the padding window.
+                lastSpeechFrame = f;
+                hangoverRemaining--;
             }
         }
 
@@ -126,7 +145,7 @@ public sealed class SileroVadService : IDisposable
 
         var trimmed = new float[trimmedLen];
         Array.Copy(samples, startSample, trimmed, 0, trimmedLen);
-        Log.Info($"VAD: trimmed {samples.Length} → {trimmedLen} samples ({startSample}..{endSample}).");
+        Log.Info($"VAD: trimmed {samples.Length} → {trimmedLen} samples ({startSample}..{endSample}; pad={paddingMs}ms, tailHangover={trailingHangoverMs}ms).");
         return trimmed;
     }
 
