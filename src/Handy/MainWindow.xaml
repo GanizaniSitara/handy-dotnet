@@ -53,6 +53,18 @@
                                        IsReadOnly="True" Focusable="True"/>
                         </Grid>
 
+                        <Grid Margin="{StaticResource RowMargin}">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="170"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="Copy last transcription" Style="{StaticResource LabelCell}"
+                                       ToolTip="Recovery hotkey: copies the most recent transcript back onto the clipboard so you can paste it manually. No paste, no SendInput — clipboard only."/>
+                            <TextBox   Grid.Column="1" x:Name="CopyLastBox" KeyDown="OnCopyLastBoxKeyDown"
+                                       IsReadOnly="True" Focusable="True"
+                                       ToolTip="Click, then press the desired combination."/>
+                        </Grid>
+
                         <TextBlock Text="SOUND" FontWeight="SemiBold" Foreground="#555" Margin="0,12,0,6"/>
 
                         <Grid Margin="{StaticResource RowMargin}">

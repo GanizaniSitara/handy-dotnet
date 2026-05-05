@@ -55,8 +55,9 @@ public partial class MainWindow : Window
         {
             _settings = ((App)Application.Current).Settings;
 
-            HotkeyBox.Text  = _settings.Hotkey;
-            CancelBox.Text  = _settings.CancelHotkey;
+            HotkeyBox.Text   = _settings.Hotkey;
+            CancelBox.Text   = _settings.CancelHotkey;
+            CopyLastBox.Text = _settings.CopyLastHotkey;
             PttCheck.IsChecked = _settings.PushToTalk;
 
             SelectComboByContent(PasteMethodCombo, _settings.PasteMethod);
@@ -136,9 +137,10 @@ public partial class MainWindow : Window
     {
         if (_settings is null || _loading) return;
 
-        _settings.Hotkey       = string.IsNullOrWhiteSpace(HotkeyBox.Text) ? _settings.Hotkey : HotkeyBox.Text;
-        _settings.CancelHotkey = string.IsNullOrWhiteSpace(CancelBox.Text) ? _settings.CancelHotkey : CancelBox.Text;
-        _settings.PushToTalk   = PttCheck.IsChecked == true;
+        _settings.Hotkey         = string.IsNullOrWhiteSpace(HotkeyBox.Text)   ? _settings.Hotkey         : HotkeyBox.Text;
+        _settings.CancelHotkey   = string.IsNullOrWhiteSpace(CancelBox.Text)   ? _settings.CancelHotkey   : CancelBox.Text;
+        _settings.CopyLastHotkey = string.IsNullOrWhiteSpace(CopyLastBox.Text) ? _settings.CopyLastHotkey : CopyLastBox.Text;
+        _settings.PushToTalk     = PttCheck.IsChecked == true;
 
         _settings.PasteMethod         = (string?)((ComboBoxItem)PasteMethodCombo.SelectedItem)?.Content ?? "CtrlV";
         _settings.AppendTrailingSpace = TrailingSpaceCheck.IsChecked == true;
@@ -207,8 +209,9 @@ public partial class MainWindow : Window
         if (BeepVolumePct is not null) BeepVolumePct.Text = $"{(int)(e.NewValue * 100)}%";
     }
 
-    private void OnHotkeyBoxKeyDown(object sender, KeyEventArgs e) => CaptureChord(HotkeyBox, e);
-    private void OnCancelBoxKeyDown(object sender, KeyEventArgs e) => CaptureChord(CancelBox, e, singleKey: true);
+    private void OnHotkeyBoxKeyDown(object sender, KeyEventArgs e)   => CaptureChord(HotkeyBox, e);
+    private void OnCancelBoxKeyDown(object sender, KeyEventArgs e)   => CaptureChord(CancelBox, e, singleKey: true);
+    private void OnCopyLastBoxKeyDown(object sender, KeyEventArgs e) => CaptureChord(CopyLastBox, e);
 
     private static void CaptureChord(TextBox box, KeyEventArgs e, bool singleKey = false)
     {

@@ -110,9 +110,13 @@ public partial class App : Application
         }
 
         _hook = new LowLevelKeyHookService();
-        _hook.Configure(Hotkey.Parse(_settings.Hotkey), Hotkey.Parse(_settings.CancelHotkey));
-        _hook.OnTrigger += OnTrigger;
-        _hook.OnCancel  += OnCancel;
+        _hook.Configure(
+            Hotkey.Parse(_settings.Hotkey),
+            Hotkey.Parse(_settings.CancelHotkey),
+            Hotkey.Parse(_settings.CopyLastHotkey));
+        _hook.OnTrigger  += OnTrigger;
+        _hook.OnCancel   += OnCancel;
+        _hook.OnCopyLast += CopyLastTranscript;
         _hook.Install();
 
         // Listen for CLI-forwarded signals from the single-instance gate.
@@ -145,7 +149,10 @@ public partial class App : Application
     {
         // Caller has already mutated _settings; just re-apply side effects.
         ReloadTranscriptionServiceIfNeeded();
-        _hook?.Configure(Hotkey.Parse(_settings.Hotkey), Hotkey.Parse(_settings.CancelHotkey));
+        _hook?.Configure(
+            Hotkey.Parse(_settings.Hotkey),
+            Hotkey.Parse(_settings.CancelHotkey),
+            Hotkey.Parse(_settings.CopyLastHotkey));
         AutostartService.Apply(_settings.Autostart);
         _feedback?.UpdateSettings(_settings);
         _audio?.SetPreferredDevice(_settings.MicrophoneDeviceName);
@@ -324,20 +331,24 @@ public partial class App : Application
 
     private void CopyLastTranscript()
     {
-        var last = _history?.Last();
-        if (string.IsNullOrEmpty(last))
+        var entry = _history?.LastEntry();
+        if (entry is null || string.IsNullOrEmpty(entry.Text))
         {
+            Log.Warn("copy-last-transcription: history empty or unreadable");
+            _feedback?.PlayCancel();
             _tray?.Notify("Handy", "No transcript yet.");
             return;
         }
         try
         {
-            if (Dispatcher.CheckAccess()) Clipboard.SetText(last);
-            else Dispatcher.Invoke(() => Clipboard.SetText(last));
+            if (Dispatcher.CheckAccess()) Clipboard.SetText(entry.Text);
+            else Dispatcher.Invoke(() => Clipboard.SetText(entry.Text));
+            Log.Info($"copy-last-transcription: {entry.Text.Length} chars from {entry.TimestampUtc:O}");
         }
         catch (Exception ex)
         {
-            Log.Warn($"Copy last: clipboard set failed: {ex.Message}");
+            Log.Warn($"copy-last-transcription: clipboard set failed: {ex.Message}");
+            _tray?.Notify("Handy", "Copy failed — see log.");
         }
     }
 

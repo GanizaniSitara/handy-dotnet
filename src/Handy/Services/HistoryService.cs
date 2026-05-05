@@ -79,6 +79,12 @@ public sealed class HistoryService
             return _entries.Count == 0 ? null : _entries[^1].Text;
     }
 
+    public HistoryEntry? LastEntry()
+    {
+        lock (_lock)
+            return _entries.Count == 0 ? null : _entries[^1];
+    }
+
     public IReadOnlyList<HistoryEntry> Snapshot()
     {
         lock (_lock) return _entries.ToArray();

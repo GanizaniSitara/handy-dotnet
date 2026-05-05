@@ -17,6 +17,7 @@ public sealed class LowLevelKeyHookService : IDisposable
 {
     public event Action<bool>? OnTrigger;   // true = pressed, false = released
     public event Action?       OnCancel;
+    public event Action?       OnCopyLast;
 
     private const int WH_KEYBOARD_LL = 13;
     private const int WM_KEYDOWN    = 0x0100;
@@ -34,6 +35,7 @@ public sealed class LowLevelKeyHookService : IDisposable
 
     private Hotkey _trigger;
     private Hotkey _cancel;
+    private Hotkey _copyLast;
     private bool   _triggerActive;
 
     public LowLevelKeyHookService()
@@ -41,12 +43,13 @@ public sealed class LowLevelKeyHookService : IDisposable
         _proc = HookCallback;
     }
 
-    public void Configure(Hotkey trigger, Hotkey cancel)
+    public void Configure(Hotkey trigger, Hotkey cancel, Hotkey copyLast)
     {
-        _trigger = trigger;
-        _cancel  = cancel;
+        _trigger  = trigger;
+        _cancel   = cancel;
+        _copyLast = copyLast;
         _triggerActive = false;
-        Log.Info($"Hotkey: trigger='{trigger.Display}' cancel='{cancel.Display}'");
+        Log.Info($"Hotkey: trigger='{trigger.Display}' cancel='{cancel.Display}' copyLast='{copyLast.Display}'");
     }
 
     public void Install()
@@ -112,6 +115,18 @@ public sealed class LowLevelKeyHookService : IDisposable
             // Don't swallow Escape — users may want it to still cancel dialogs etc.
         }
 
+        // Copy-last match. Checked before the trigger so chords that share the same VK
+        // (e.g. Ctrl+Alt+Space trigger and Ctrl+Alt+Shift+Space copy-last) don't both fire.
+        if (!_copyLast.IsEmpty && vk == _copyLast.Vk && isDown)
+        {
+            var modsPressed = CurrentMods();
+            if ((_copyLast.Required & modsPressed) == _copyLast.Required)
+            {
+                DispatchCopyLast();
+                return (IntPtr)1;
+            }
+        }
+
         // Trigger match.
         if (!_trigger.IsEmpty && vk == _trigger.Vk)
         {
@@ -147,6 +162,20 @@ public sealed class LowLevelKeyHookService : IDisposable
         app.Dispatcher.BeginInvoke(new Action(() =>
         {
             try { OnTrigger?.Invoke(pressed); } catch (Exception ex) { Log.Error($"OnTrigger: {ex}"); }
+        }));
+    }
+
+    private void DispatchCopyLast()
+    {
+        var app = Application.Current;
+        if (app is null)
+        {
+            try { OnCopyLast?.Invoke(); } catch (Exception ex) { Log.Error($"OnCopyLast: {ex}"); }
+            return;
+        }
+        app.Dispatcher.BeginInvoke(new Action(() =>
+        {
+            try { OnCopyLast?.Invoke(); } catch (Exception ex) { Log.Error($"OnCopyLast: {ex}"); }
         }));
     }
 
