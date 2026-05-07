@@ -18,8 +18,8 @@ namespace Handy.Services;
 ///   3. decoder+join (decoder_joint): encoded frame + LSTM state → vocab logits
 ///
 /// Decoding is greedy RNN-T (max_symbols_per_step=10). The TDT duration head is
-/// deliberately NOT consumed — transcribe-rs ignores it too; layering that on is
-/// a future improvement.
+/// deliberately NOT consumed because upstream transcribe-rs ignores it too; using
+/// it here makes the port skip encoder frames differently from original Handy.
 /// </summary>
 public sealed class ParakeetTranscriptionService : ITranscriptionService
 {
@@ -27,9 +27,9 @@ public sealed class ParakeetTranscriptionService : ITranscriptionService
     private const int SampleRate = 16000;
     private const int PreRollMs = 250;
 
-    // Parakeet TDT duration head: the last (1030 - vocab_size) logits are durations.
-    // For the 0.6b V2/V3 models that's exactly 5 durations: {0, 1, 2, 3, 4}.
-    // d=0: emit token, stay on this frame; d>=1: advance by d frames.
+    // Parakeet TDT also emits a duration head after the vocab logits. Upstream
+    // transcribe-rs slices logits to vocab_size and advances one encoder frame
+    // on blank/max-symbols, so we do the same for parity with original Handy.
 
     private readonly InferenceSession? _preproc;
     private readonly InferenceSession? _encoder;
@@ -162,7 +162,7 @@ public sealed class ParakeetTranscriptionService : ITranscriptionService
         }
         Log.Info($"Encoder: out[1,{dEnc},{tEnc}], encLen={encLen} in {total.ElapsedMilliseconds - encStart} ms");
 
-        // 3) Greedy TDT decode — uses both the vocab head and the duration head.
+        // 3) Greedy RNN-T decode over vocab logits only, matching transcribe-rs.
         var decStart = total.ElapsedMilliseconds;
         var tokens = new List<int>(capacity: 256);
 
@@ -198,7 +198,7 @@ public sealed class ParakeetTranscriptionService : ITranscriptionService
                     NamedOnnxValue.CreateFromTensor("input_states_2",  inState2),
                 };
 
-                int token, duration;
+                int token;
                 float[] newState1, newState2;
                 using (var decOut = _decoder!.Run(decIn))
                 {
@@ -207,23 +207,14 @@ public sealed class ParakeetTranscriptionService : ITranscriptionService
 
                     int vs = _tok.VocabSize;
                     int totalLogits = flat.Length;
-                    int numDurations = Math.Max(1, totalLogits - vs);
+                    int vocabLogits = Math.Min(vs, totalLogits);
 
                     // Argmax over vocab head.
-                    token = 0;
+                    token = _tok.BlankId;
                     float bestTok = float.NegativeInfinity;
-                    for (int i = 0; i < vs && i < totalLogits; i++)
+                    for (int i = 0; i < vocabLogits; i++)
                     {
                         if (flat[i] > bestTok) { bestTok = flat[i]; token = i; }
-                    }
-
-                    // Argmax over duration head.
-                    duration = 0;
-                    float bestDur = float.NegativeInfinity;
-                    for (int i = 0; i < numDurations && vs + i < totalLogits; i++)
-                    {
-                        var v = flat[vs + i];
-                        if (v > bestDur) { bestDur = v; duration = i; }
                     }
 
                     newState1 = byName["output_states_1"].AsTensor<float>().ToArray();
@@ -232,9 +223,9 @@ public sealed class ParakeetTranscriptionService : ITranscriptionService
 
                 if (token == _tok.BlankId)
                 {
-                    // Blank emission. Advance by the predicted duration, but at
-                    // least 1 — a blank with d=0 would be an infinite loop.
-                    advance = Math.Max(1, duration);
+                    // Blank emission advances one encoder frame. Do not commit
+                    // decoder state on blank; this mirrors transcribe-rs.
+                    advance = 1;
                     break;
                 }
 
@@ -245,13 +236,8 @@ public sealed class ParakeetTranscriptionService : ITranscriptionService
                 tokens.Add(token);
                 emittedThisFrame++;
 
-                if (duration > 0)
-                {
-                    advance = duration;
-                    break;
-                }
-                // duration == 0: stay on the same frame and emit more — unless
-                // we've hit the per-frame safety cap.
+                // Stay on the same encoder frame and emit more symbols until
+                // blank or the per-frame safety cap advances us.
                 if (emittedThisFrame >= MaxSymbolsPerStep)
                 {
                     advance = 1;

@@ -12,6 +12,10 @@ namespace Handy.Services;
 /// </summary>
 public sealed class AppSettings
 {
+    private const int CurrentSettingsVersion = 2;
+
+    public int SettingsVersion { get; set; } = CurrentSettingsVersion;
+
     public string Hotkey { get; set; } = "Ctrl+Alt+Space";
     public string CancelHotkey { get; set; } = "Escape";
 
@@ -104,11 +108,13 @@ public sealed class AppSettings
     {
         var path = Path.Combine(dataDir, "settings.json");
         AppSettings s;
+        bool hasSettingsVersion = false;
         if (File.Exists(path))
         {
             try
             {
                 var json = File.ReadAllText(path);
+                hasSettingsVersion = HasJsonProperty(json, "settingsVersion");
                 s = JsonSerializer.Deserialize<AppSettings>(json, JsonOpts) ?? new AppSettings();
             }
             catch (Exception ex)
@@ -122,6 +128,8 @@ public sealed class AppSettings
             s = new AppSettings();
         }
         s.FilePath = path;
+        if (ApplyMigrations(s, dataDir, hasSettingsVersion))
+            s.Save();
         return s;
     }
 
@@ -138,4 +146,50 @@ public sealed class AppSettings
             Log.Error($"Failed to save settings: {ex.Message}");
         }
     }
+
+    private static bool ApplyMigrations(AppSettings s, string dataDir, bool hasSettingsVersion)
+    {
+        var migrated = false;
+
+        if (!hasSettingsVersion)
+        {
+            // Older saved settings kept the original VAD defaults, which were
+            // too aggressive for quiet starts/ends of dictation.
+            if (Math.Abs(s.VadThreshold - 0.5) < 0.0001)
+            {
+                s.VadThreshold = 0.3;
+                migrated = true;
+                Log.Info("Settings migration: VAD threshold 0.50 -> 0.30.");
+            }
+            if (s.VadPaddingMs == 200)
+            {
+                s.VadPaddingMs = 500;
+                migrated = true;
+                Log.Info("Settings migration: VAD padding 200ms -> 500ms.");
+            }
+        }
+
+        if (!hasSettingsVersion || s.SettingsVersion != CurrentSettingsVersion)
+        {
+            s.SettingsVersion = CurrentSettingsVersion;
+            migrated = true;
+        }
+
+        return migrated;
+    }
+
+    private static bool HasJsonProperty(string json, string propertyName)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            return doc.RootElement.ValueKind == JsonValueKind.Object &&
+                   doc.RootElement.TryGetProperty(propertyName, out _);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
 }

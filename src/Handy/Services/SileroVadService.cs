@@ -157,10 +157,9 @@ public sealed class SileroVadService : IDisposable
     /// speech onsets, the prefill window is flushed first so the model still
     /// sees a few hundred ms of context before the first detected voice frame.
     ///
-    /// Use this for the live recording path. <see cref="Trim"/> is the older
-    /// "first..last + padding" behaviour kept for the --transcribe-file
-    /// one-shot, where mid-clip pauses are part of the asset and shouldn't
-    /// be removed.
+    /// Kept for diagnostics and upstream-parity experiments. The live recording
+    /// path currently uses <see cref="Trim"/> so mid-clip pauses are preserved
+    /// for conversational dictation.
     /// </summary>
     public float[] Smooth(
         float[] samples,
