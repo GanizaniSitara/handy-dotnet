@@ -369,7 +369,7 @@ public partial class MainWindow : Window
         {
             var dir = await ModelDownloadService.DownloadAsync(modelsRoot, variant, progress,
                 System.Threading.CancellationToken.None);
-            DownloadStatus.Text = $"Installed to {dir}. Restart Handy to use it.";
+            DownloadStatus.Text = $"Installed to {dir}. Restart Handy.NET to use it.";
             RefreshModelStatus();
         }
         catch (Exception ex)
