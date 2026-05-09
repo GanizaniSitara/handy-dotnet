@@ -41,7 +41,7 @@ public sealed class TrayIconManager : IDisposable
         _icon = new NotifyIcon
         {
             Icon = IconAssets.RenderHandTrayIcon(32, System.Windows.Media.Color.FromRgb(0x58, 0x93, 0xDA)),
-            Text = "Handy — press hotkey to dictate",
+            Text = "Handy.NET — press hotkey to dictate",
             Visible = true,
             ContextMenuStrip = menu,
         };
@@ -62,17 +62,17 @@ public sealed class TrayIconManager : IDisposable
             case State.Recording:
                 _statusItem.Text = "Recording…";
                 _cancelItem.Enabled = true;
-                _icon.Text = "Handy — recording";
+                _icon.Text = "Handy.NET — recording";
                 break;
             case State.Transcribing:
                 _statusItem.Text = "Transcribing…";
                 _cancelItem.Enabled = false;
-                _icon.Text = "Handy — transcribing";
+                _icon.Text = "Handy.NET — transcribing";
                 break;
             default:
                 _statusItem.Text = "Idle";
                 _cancelItem.Enabled = false;
-                _icon.Text = "Handy — press hotkey to dictate";
+                _icon.Text = "Handy.NET — press hotkey to dictate";
                 break;
         }
     }

@@ -229,7 +229,7 @@ public partial class App : Application
         if (_asr is null || !_asr.IsReady)
         {
             Log.Warn("Model not loaded; cannot start recording.");
-            _tray?.Notify("Handy", $"{NormalizeBackend(_settings.TranscriptionBackend)} model missing. See README.");
+            _tray?.Notify("Handy.NET", $"{NormalizeBackend(_settings.TranscriptionBackend)} model missing. See README.");
             return;
         }
         _recording = true;
@@ -297,7 +297,7 @@ public partial class App : Application
         catch (Exception ex)
         {
             Log.Error($"Transcription failed: {ex}");
-            _tray?.Notify("Handy", "Transcription failed — see log.");
+            _tray?.Notify("Handy.NET", "Transcription failed — see log.");
         }
         finally
         {
@@ -344,7 +344,7 @@ public partial class App : Application
         {
             Log.Warn("copy-last-transcription: history empty or unreadable");
             _feedback?.PlayCancel();
-            _tray?.Notify("Handy", "No transcript yet.");
+            _tray?.Notify("Handy.NET", "No transcript yet.");
             return;
         }
         try
@@ -356,7 +356,7 @@ public partial class App : Application
         catch (Exception ex)
         {
             Log.Warn($"copy-last-transcription: clipboard set failed: {ex.Message}");
-            _tray?.Notify("Handy", "Copy failed — see log.");
+            _tray?.Notify("Handy.NET", "Copy failed — see log.");
         }
     }
 
