@@ -3,6 +3,7 @@ using System.IO;
 using System.Linq;
 using System.Windows;
 using System.Windows.Interop;
+using System.Windows.Media;
 using Handy.Services;
 
 namespace Handy;
@@ -32,6 +33,12 @@ public partial class App : Application
     internal AppSettings Settings => _settings;
     internal ITranscriptionService? Asr => _asr;
     internal HistoryService? History => _history;
+
+    internal sealed record ModelRuntimeStatus(
+        string Backend,
+        string ModelName,
+        string Path,
+        bool IsReady);
 
     private void OnStartup(object sender, StartupEventArgs e)
     {
@@ -86,7 +93,8 @@ public partial class App : Application
         _history = new HistoryService(_dataDir, _settings.HistoryLimit);
 
         _settingsWindow = new MainWindow();
-        _settingsWindow.SetModelPath(DescribeActiveModelPath(_settings, _dataDir, _parakeetModelDir));
+        _settingsWindow.Icon = IconAssets.RenderHand(64, Color.FromRgb(0x58, 0x93, 0xDA));
+        _settingsWindow.RefreshModelStatus();
         // Force HWND creation up-front so the process has a live top-level
         // window even in tray-only mode. Without this, Windows' foreground
         // eligibility rules filter SendInput deliveries into apps that run
@@ -396,8 +404,43 @@ public partial class App : Application
         _activeBackend = backend;
         _activeWhisperModel = whisperModel;
         old?.Dispose();
-        _settingsWindow?.SetModelPath(DescribeActiveModelPath(_settings, _dataDir, _parakeetModelDir));
+        _settingsWindow?.RefreshModelStatus();
         Log.Info($"Transcription backend switched to {_activeBackend} ({DescribeActiveModelPath(_settings, _dataDir, _parakeetModelDir)})");
+    }
+
+    internal ModelRuntimeStatus GetActiveModelStatus()
+    {
+        var backend = NormalizeBackend(_activeBackend);
+        if (string.Equals(backend, "Whisper", StringComparison.OrdinalIgnoreCase))
+        {
+            var modelName = WhisperTranscriptionService.NormalizeModelName(_activeWhisperModel);
+            var path = WhisperTranscriptionService.ModelPathFor(ResolveWhisperModelsDir(_dataDir), modelName);
+            return new ModelRuntimeStatus("Whisper", $"Whisper {modelName}", path, _asr?.IsReady == true);
+        }
+
+        return new ModelRuntimeStatus(
+            "Parakeet",
+            DescribeParakeetModelName(_parakeetModelDir),
+            _parakeetModelDir,
+            _asr?.IsReady == true);
+    }
+
+    internal ModelRuntimeStatus DescribeModelSelection(string backend, string whisperModel)
+    {
+        backend = NormalizeBackend(backend);
+        if (string.Equals(backend, "Whisper", StringComparison.OrdinalIgnoreCase))
+        {
+            var modelName = WhisperTranscriptionService.NormalizeModelName(whisperModel);
+            var path = WhisperTranscriptionService.ModelPathFor(ResolveWhisperModelsDir(_dataDir), modelName);
+            return new ModelRuntimeStatus("Whisper", $"Whisper {modelName}", path, File.Exists(path));
+        }
+
+        var parakeetModelDir = ResolveModelDir(_dataDir);
+        return new ModelRuntimeStatus(
+            "Parakeet",
+            DescribeParakeetModelName(parakeetModelDir),
+            parakeetModelDir,
+            HasParakeetAssets(parakeetModelDir));
     }
 
     private static void RunTranscribeFile(string wavPath, string dataDir)
@@ -508,5 +551,13 @@ public partial class App : Application
         }
 
         return parakeetModelDir;
+    }
+
+    private static string DescribeParakeetModelName(string path)
+    {
+        var dirName = Path.GetFileName(Path.TrimEndingDirectorySeparator(path)).ToLowerInvariant();
+        if (dirName.Contains("v3")) return "Parakeet V3";
+        if (dirName.Contains("v2")) return "Parakeet V2";
+        return "Parakeet";
     }
 }

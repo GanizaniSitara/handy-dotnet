@@ -10,16 +10,19 @@
         IsHitTestVisible="False"
         Focusable="False"
         SizeToContent="WidthAndHeight">
-    <Border CornerRadius="10" Padding="14,8" Background="#CC111111">
+    <Border CornerRadius="16" Padding="14,7" Background="#CC000000">
         <StackPanel Orientation="Horizontal">
-            <TextBlock x:Name="StateLabel" Text="Listening" Foreground="White" FontSize="13" FontWeight="SemiBold" VerticalAlignment="Center"/>
+            <TextBlock x:Name="StateLabel" Text="Listening"
+                       Foreground="White" FontSize="12" FontWeight="Medium"
+                       FontFamily="Segoe UI" VerticalAlignment="Center"/>
             <!-- Live input-level bars; hidden during transcription. -->
-            <StackPanel x:Name="LevelBars" Orientation="Horizontal" VerticalAlignment="Center" Margin="10,0,0,0" Height="18">
-                <Rectangle x:Name="Bar0" Width="3" Height="2" Margin="1,0" Fill="#E0403D" VerticalAlignment="Bottom" RadiusX="1.5" RadiusY="1.5"/>
-                <Rectangle x:Name="Bar1" Width="3" Height="2" Margin="1,0" Fill="#E0403D" VerticalAlignment="Bottom" RadiusX="1.5" RadiusY="1.5"/>
-                <Rectangle x:Name="Bar2" Width="3" Height="2" Margin="1,0" Fill="#E0403D" VerticalAlignment="Bottom" RadiusX="1.5" RadiusY="1.5"/>
-                <Rectangle x:Name="Bar3" Width="3" Height="2" Margin="1,0" Fill="#E0403D" VerticalAlignment="Bottom" RadiusX="1.5" RadiusY="1.5"/>
-                <Rectangle x:Name="Bar4" Width="3" Height="2" Margin="1,0" Fill="#E0403D" VerticalAlignment="Bottom" RadiusX="1.5" RadiusY="1.5"/>
+            <StackPanel x:Name="LevelBars" Orientation="Horizontal" VerticalAlignment="Center"
+                        Margin="12,0,0,0" Height="20">
+                <Rectangle x:Name="Bar0" Width="5" Height="2" Margin="1.5,0" Fill="#FFA2CAFA" VerticalAlignment="Bottom" RadiusX="2" RadiusY="2"/>
+                <Rectangle x:Name="Bar1" Width="5" Height="2" Margin="1.5,0" Fill="#FFA2CAFA" VerticalAlignment="Bottom" RadiusX="2" RadiusY="2"/>
+                <Rectangle x:Name="Bar2" Width="5" Height="2" Margin="1.5,0" Fill="#FFA2CAFA" VerticalAlignment="Bottom" RadiusX="2" RadiusY="2"/>
+                <Rectangle x:Name="Bar3" Width="5" Height="2" Margin="1.5,0" Fill="#FFA2CAFA" VerticalAlignment="Bottom" RadiusX="2" RadiusY="2"/>
+                <Rectangle x:Name="Bar4" Width="5" Height="2" Margin="1.5,0" Fill="#FFA2CAFA" VerticalAlignment="Bottom" RadiusX="2" RadiusY="2"/>
             </StackPanel>
         </StackPanel>
     </Border>

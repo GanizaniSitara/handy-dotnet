@@ -6,6 +6,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Interop;
+using System.Windows.Media;
 using Handy.Services;
 
 namespace Handy;
@@ -21,6 +22,7 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        LogoPath.Data = Geometry.Parse(IconAssets.HandPathData);
         Log.Sink = AppendLine;
 
         Loaded += (_, _) => LoadFromSettings();
@@ -46,7 +48,49 @@ public partial class MainWindow : Window
         return IntPtr.Zero;
     }
 
-    public void SetModelPath(string path) => ModelPathText.Text = path;
+    public void RefreshModelStatus()
+    {
+        if (!Dispatcher.CheckAccess())
+        {
+            Dispatcher.BeginInvoke(new Action(RefreshModelStatus));
+            return;
+        }
+
+        if (ActiveModelSummaryText is null) return;
+
+        var app = (App)Application.Current;
+        var active = app.GetActiveModelStatus();
+        var selectedBackend = ComboContent(TranscriptionBackendCombo, _settings?.TranscriptionBackend ?? active.Backend);
+        var selectedWhisperModel = ComboContent(WhisperModelCombo, _settings?.WhisperModel ?? "base");
+        var pending = app.DescribeModelSelection(selectedBackend, selectedWhisperModel);
+
+        ActiveModelSummaryText.Text = $"{active.ModelName} ({active.Backend})";
+        ActiveModelStatusText.Text = active.IsReady
+            ? "Ready - currently used for transcription"
+            : "Missing - transcription will fail until this model is installed";
+        ActiveModelStatusText.Foreground = active.IsReady ? Brushes.ForestGreen : Brushes.Firebrick;
+        ActiveModelPathText.Text = active.Path;
+
+        var selectionMatchesActive =
+            string.Equals(active.Backend, pending.Backend, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(active.ModelName, pending.ModelName, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(active.Path, pending.Path, StringComparison.OrdinalIgnoreCase);
+
+        PendingModelSummaryText.Text = $"{pending.ModelName} ({pending.Backend})";
+        PendingModelStatusText.Text = pending.IsReady
+            ? selectionMatchesActive
+                ? "Already active"
+                : "Ready - click Apply to switch"
+            : "Missing - download this model before applying";
+        PendingModelStatusText.Foreground = pending.IsReady
+            ? selectionMatchesActive ? Brushes.ForestGreen : Brushes.DarkOrange
+            : Brushes.Firebrick;
+        PendingModelPathText.Text = pending.Path;
+
+        var whisperSelected = string.Equals(pending.Backend, "Whisper", StringComparison.OrdinalIgnoreCase);
+        WhisperModelCombo.IsEnabled = whisperSelected;
+        WhisperModelCombo.Opacity = whisperSelected ? 1.0 : 0.55;
+    }
 
     private void LoadFromSettings()
     {
@@ -98,6 +142,7 @@ public partial class MainWindow : Window
             SelectComboByContent(TranscriptionBackendCombo, _settings.TranscriptionBackend);
             SelectComboByContent(WhisperModelCombo, WhisperTranscriptionService.NormalizeModelName(_settings.WhisperModel));
             SelectComboByContent(DownloadWhisperModelCombo, WhisperTranscriptionService.NormalizeModelName(_settings.WhisperModel));
+            RefreshModelStatus();
         }
         finally { _loading = false; }
     }
@@ -181,6 +226,7 @@ public partial class MainWindow : Window
         _settings.WhisperModel = (string?)((ComboBoxItem)WhisperModelCombo.SelectedItem)?.Content ?? "base";
 
         ((App)Application.Current).ReloadSettings();
+        RefreshModelStatus();
         Log.Info("Settings applied.");
         ShowSaveStatus($"Saved at {DateTime.Now:HH:mm:ss}");
     }
@@ -207,6 +253,12 @@ public partial class MainWindow : Window
     private void OnBeepVolumeChanged(object sender, System.Windows.RoutedPropertyChangedEventArgs<double> e)
     {
         if (BeepVolumePct is not null) BeepVolumePct.Text = $"{(int)(e.NewValue * 100)}%";
+    }
+
+    private void OnModelSelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_loading) return;
+        RefreshModelStatus();
     }
 
     private void OnHotkeyBoxKeyDown(object sender, KeyEventArgs e)   => CaptureChord(HotkeyBox, e);
@@ -283,6 +335,15 @@ public partial class MainWindow : Window
     private void OnHide(object sender, RoutedEventArgs e) => Hide();
     private void OnQuit(object sender, RoutedEventArgs e) => Application.Current.Shutdown();
 
+    private void OnNavChecked(object sender, RoutedEventArgs e)
+    {
+        if (PanelGeneral is null) return;
+        PanelGeneral.Visibility  = NavGeneral.IsChecked  == true ? Visibility.Visible : Visibility.Collapsed;
+        PanelAdvanced.Visibility = NavAdvanced.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
+        PanelModels.Visibility   = NavModels.IsChecked   == true ? Visibility.Visible : Visibility.Collapsed;
+        PanelLog.Visibility      = NavLog.IsChecked      == true ? Visibility.Visible : Visibility.Collapsed;
+    }
+
     private async void OnDownloadModel(object sender, RoutedEventArgs e)
     {
         var pick = (string?)((ComboBoxItem)DownloadVariantCombo.SelectedItem)?.Content ?? "V2";
@@ -309,7 +370,7 @@ public partial class MainWindow : Window
             var dir = await ModelDownloadService.DownloadAsync(modelsRoot, variant, progress,
                 System.Threading.CancellationToken.None);
             DownloadStatus.Text = $"Installed to {dir}. Restart Handy to use it.";
-            ModelPathText.Text = dir;
+            RefreshModelStatus();
         }
         catch (Exception ex)
         {
@@ -347,7 +408,7 @@ public partial class MainWindow : Window
                 await ModelDownloadService.DownloadWhisperAsync(whisperDir, model, progress,
                     System.Threading.CancellationToken.None));
             DownloadWhisperStatus.Text = $"Installed to {path}";
-            ModelPathText.Text = path;
+            RefreshModelStatus();
         }
         catch (Exception ex)
         {
@@ -365,4 +426,7 @@ public partial class MainWindow : Window
         var w = new HistoryWindow();
         w.Show();
     }
+
+    private static string ComboContent(ComboBox combo, string fallback)
+        => (string?)((ComboBoxItem?)combo.SelectedItem)?.Content ?? fallback;
 }

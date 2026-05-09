@@ -40,7 +40,7 @@ public sealed class TrayIconManager : IDisposable
 
         _icon = new NotifyIcon
         {
-            Icon = SystemIcons.Application,
+            Icon = IconAssets.RenderHandTrayIcon(32, System.Windows.Media.Color.FromRgb(0x58, 0x93, 0xDA)),
             Text = "Handy — press hotkey to dictate",
             Visible = true,
             ContextMenuStrip = menu,
