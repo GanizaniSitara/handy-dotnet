@@ -22,12 +22,6 @@
             <Color x:Key="Color.Danger">#FFD23B3B</Color>
             <Color x:Key="Color.Success">#FF2A8F3A</Color>
 
-            <!-- Recording-overlay state palette. Tray icon and overlay bars
-                 share these colours so the two surfaces always agree. -->
-            <Color x:Key="Color.StateIdle">#FFA2CAFA</Color>
-            <Color x:Key="Color.StateRecording">#FFE0403D</Color>
-            <Color x:Key="Color.StateTranscribing">#FF43A047</Color>
-
             <SolidColorBrush x:Key="Brush.Text"             Color="{StaticResource Color.Text}"/>
             <SolidColorBrush x:Key="Brush.TextSubtle"       Color="{StaticResource Color.TextSubtle}"/>
             <SolidColorBrush x:Key="Brush.Background"       Color="{StaticResource Color.Background}"/>
@@ -41,9 +35,6 @@
             <SolidColorBrush x:Key="Brush.BackgroundUIHover" Color="{StaticResource Color.BackgroundUIHover}"/>
             <SolidColorBrush x:Key="Brush.Danger"           Color="{StaticResource Color.Danger}"/>
             <SolidColorBrush x:Key="Brush.Success"          Color="{StaticResource Color.Success}"/>
-            <SolidColorBrush x:Key="Brush.StateIdle"         Color="{StaticResource Color.StateIdle}"/>
-            <SolidColorBrush x:Key="Brush.StateRecording"    Color="{StaticResource Color.StateRecording}"/>
-            <SolidColorBrush x:Key="Brush.StateTranscribing" Color="{StaticResource Color.StateTranscribing}"/>
 
             <!-- Typography: 14px base / 20 line; matches upstream's 15/24 feel for WPF's tighter metrics. -->
             <Style TargetType="TextBlock" x:Key="Text.Base">

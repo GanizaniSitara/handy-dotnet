@@ -49,23 +49,14 @@ public partial class RecordingOverlay : Window
         {
             case State.Transcribing:
                 StateLabel.Text = "Transcribing";
-                StateLabel.Foreground = (Brush)Application.Current.Resources["Brush.StateTranscribing"];
-                ApplyBarBrush((Brush)Application.Current.Resources["Brush.StateTranscribing"]);
                 LevelBars.Visibility = Visibility.Collapsed;
                 break;
             default:
-                StateLabel.Text = "Recording";
-                StateLabel.Foreground = (Brush)Application.Current.Resources["Brush.StateRecording"];
-                ApplyBarBrush((Brush)Application.Current.Resources["Brush.StateRecording"]);
+                StateLabel.Text = "Listening";
                 LevelBars.Visibility = Visibility.Visible;
                 ResetBars();
                 break;
         }
-    }
-
-    private void ApplyBarBrush(Brush brush)
-    {
-        Bar0.Fill = Bar1.Fill = Bar2.Fill = Bar3.Fill = Bar4.Fill = brush;
     }
 
     private const double BarMaxHeight = 18;
