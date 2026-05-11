@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Windows;
@@ -29,6 +30,13 @@ public partial class App : Application
     private bool _recording;
     private bool _cancelled;
     private bool _transcribing;
+
+    // Per-dictation diagnostics. Captured in StartRecording, finalised at the
+    // end of StopAndTranscribe into a single greppable INFO line. The whole
+    // chain (capture -> VAD -> ASR -> paste) is hard to triage without one
+    // place to read what each stage did, so we emit one machine-parseable
+    // summary alongside the existing per-stage log lines.
+    private long _recStartTicks;
 
     internal AppSettings Settings => _settings;
     internal ITranscriptionService? Asr => _asr;
@@ -234,6 +242,7 @@ public partial class App : Application
         }
         _recording = true;
         _cancelled = false;
+        _recStartTicks = Stopwatch.GetTimestamp();
         _tray?.SetState(Services.TrayIconManager.State.Recording);
         ShowOverlay(RecordingOverlay.State.Recording);
         _feedback?.PlayStart();
@@ -244,6 +253,9 @@ public partial class App : Application
     private async void StopAndTranscribe()
     {
         _recording = false;
+        var startTicks = _recStartTicks;
+        var sw = Stopwatch.StartNew();
+
         var samples = await _audio!.StopAsync(_settings.PostRollMs);
         Log.Info($"Recording stopped. {samples.Length} samples captured (post-roll {_settings.PostRollMs} ms).");
 
@@ -251,18 +263,27 @@ public partial class App : Application
         {
             SetUiState(isRecording: false, isTranscribing: false, hideOverlay: true);
             Log.Info("Recording cancelled; skipping transcription.");
+            EmitDiag(startTicks, samples.Length, samples.Length, samples.Length, 0, 0, 0, "-", false, "cancelled");
             return;
         }
         if (samples.Length < 16000 / 4)
         {
             SetUiState(isRecording: false, isTranscribing: false, hideOverlay: true);
             Log.Warn("Recording too short; skipping.");
+            EmitDiag(startTicks, samples.Length, samples.Length, samples.Length, 0, 0, 0, "-", false, "tooShort");
             return;
         }
 
         _feedback?.PlayStop();
         SetUiState(isRecording: false, isTranscribing: true, hideOverlay: false);
         _transcribing = true;
+        int rawSampleCount = samples.Length;
+        int vadOutCount = samples.Length;
+        long asrMs = 0;
+        int rawLen = 0, filtLen = 0;
+        bool pasteOk = false;
+        string pasteMethod = _settings.PasteMethod ?? "Direct";
+        string outcome = "ok";
         try
         {
             if (_settings.VadEnabled && _vad is not null && _vad.IsReady)
@@ -270,14 +291,20 @@ public partial class App : Application
                 // Trim leading/trailing silence only — Smooth() was previously used here
                 // but it removes mid-clip silence, severing transcription context across pauses.
                 samples = _vad.Trim(samples, _settings.VadThreshold, _settings.VadPaddingMs);
+                vadOutCount = samples.Length;
             }
 
             var asr = _asr;
             if (asr is null || !asr.IsReady) throw new InvalidOperationException("Transcription model not loaded.");
 
+            var asrSw = Stopwatch.StartNew();
             var raw = await asr.TranscribeAsync(samples);
+            asrSw.Stop();
+            asrMs = asrSw.ElapsedMilliseconds;
+            rawLen = raw?.Length ?? 0;
             Log.Info($"Raw: \"{raw}\"");
-            var text = Services.TranscriptFilter.Filter(raw, _settings.AppLanguage, _settings.CustomFillerWords);
+            var text = Services.TranscriptFilter.Filter(raw ?? string.Empty, _settings.AppLanguage, _settings.CustomFillerWords);
+            filtLen = text?.Length ?? 0;
             Log.Info(raw == text
                 ? $"Filter: (no change) lang={_settings.AppLanguage}"
                 : $"Filter: \"{raw}\" -> \"{text}\" (lang={_settings.AppLanguage})");
@@ -290,20 +317,55 @@ public partial class App : Application
                 Log.Info("Flow: before history.Add");
                 _history?.Add(text);
                 Log.Info("Flow: after history.Add, before paste");
-                _injector!.Paste(text, _settings);
+                try
+                {
+                    _injector!.Paste(text, _settings);
+                    pasteOk = true;
+                }
+                catch (Exception pex)
+                {
+                    Log.Error($"Paste threw: {pex.Message}");
+                    outcome = "pasteThrew";
+                }
                 Log.Info("Flow: after paste");
+            }
+            else
+            {
+                outcome = "emptyTranscript";
             }
         }
         catch (Exception ex)
         {
             Log.Error($"Transcription failed: {ex}");
             _tray?.Notify("Handy.NET", "Transcription failed — see log.");
+            outcome = "asrFailed";
         }
         finally
         {
             _transcribing = false;
             SetUiState(isRecording: false, isTranscribing: false, hideOverlay: true);
+            EmitDiag(startTicks, rawSampleCount, vadOutCount, samples.Length,
+                     asrMs, rawLen, filtLen, pasteMethod, pasteOk, outcome);
         }
+    }
+
+    // One machine-greppable line per dictation. Pair with the existing per-stage
+    // logs (Raw/Filter/Paste/Flow) when triaging "lost" dictations. Field order
+    // is stable so it can be parsed with a one-liner.
+    private void EmitDiag(long recStartTicks, int rawSamples, int vadOutSamples, int finalSamples,
+                          long asrMs, int rawLen, int filtLen,
+                          string pasteMethod, bool pasteOk, string outcome)
+    {
+        long heldMs = 0;
+        if (recStartTicks > 0)
+            heldMs = (Stopwatch.GetTimestamp() - recStartTicks) * 1000 / Stopwatch.Frequency;
+
+        int audioMs = rawSamples * 1000 / 16000;
+        int vadOutMs = vadOutSamples * 1000 / 16000;
+        Log.Info($"Diag: heldMs={heldMs} audioMs={audioMs} samples={rawSamples} " +
+                 $"vadOutSamples={vadOutSamples} vadOutMs={vadOutMs} finalSamples={finalSamples} " +
+                 $"asrMs={asrMs} rawLen={rawLen} filtLen={filtLen} " +
+                 $"paste={pasteMethod} pasteOk={(pasteOk ? "true" : "false")} outcome={outcome}");
     }
 
     // UI touches (tray NotifyIcon + WPF overlay) must happen on the dispatcher.
