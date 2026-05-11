@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
+using System.Windows;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 
@@ -92,13 +94,60 @@ internal static class IconAssets
         return new System.Drawing.Icon(ms);
     }
 
+    // Solid coloured disc with a bold white "H" centred on top. Reads at 16 px
+    // where the full hand silhouette degraded into noise. Disc colour carries
+    // the recording state, "H" anchors brand identity at a glance.
+    private static BitmapSource RenderTrayGlyph(int size, Color fillColor)
+    {
+        var disc = new SolidColorBrush(fillColor);
+        disc.Freeze();
+        var letter = new SolidColorBrush(Colors.White);
+        letter.Freeze();
+
+        var visual = new DrawingVisual();
+        using (var dc = visual.RenderOpen())
+        {
+            var pad = Math.Max(1, size * 0.04);
+            var radius = size / 2.0 - pad;
+            var center = new Point(size / 2.0, size / 2.0);
+            dc.DrawEllipse(disc, null, center, radius, radius);
+
+            // Font size tuned to fill the disc without crowding the edge. Segoe
+            // UI Bold has good hinting at small pixel sizes which matters for
+            // 16/20/24-px tray frames.
+            var fontSize = size * 0.66;
+            var typeface = new Typeface(new FontFamily("Segoe UI"),
+                FontStyles.Normal, FontWeights.Bold, FontStretches.Normal);
+            var ft = new FormattedText(
+                "H",
+                CultureInfo.InvariantCulture,
+                FlowDirection.LeftToRight,
+                typeface,
+                fontSize,
+                letter,
+                pixelsPerDip: 1.0)
+            {
+                TextAlignment = TextAlignment.Center,
+            };
+            var origin = new Point(
+                size / 2.0 - ft.Width / 2.0,
+                size / 2.0 - ft.Height / 2.0);
+            dc.DrawText(ft, origin);
+        }
+
+        var bmp = new RenderTargetBitmap(size, size, 96, 96, PixelFormats.Pbgra32);
+        bmp.Render(visual);
+        bmp.Freeze();
+        return bmp;
+    }
+
     // ICO BMP frame: BITMAPINFOHEADER + bottom-up 32bpp BGRA pixel rows + AND mask.
-    // biHeight is doubled to accommodate the mask. PBGRA32 from RenderHand is
-    // premultiplied; un-premultiply so the shell composites it correctly over
-    // any taskbar background.
+    // biHeight is doubled to accommodate the mask. PBGRA32 from RenderTrayGlyph
+    // is premultiplied; un-premultiply so the shell composites it correctly
+    // over any taskbar background.
     private static byte[] BuildIcoBmpFrame(int size, Color fillColor)
     {
-        var src = RenderHand(size, fillColor);
+        var src = RenderTrayGlyph(size, fillColor);
         int stride = size * 4;
         var pixels = new byte[stride * size];
         src.CopyPixels(pixels, stride, 0);
