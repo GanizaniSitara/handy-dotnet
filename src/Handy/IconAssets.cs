@@ -1,6 +1,6 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
-using System.Windows;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 
@@ -43,16 +43,117 @@ internal static class IconAssets
         return bmp;
     }
 
-    public static System.Drawing.Icon RenderHandTrayIcon(int size, Color fillColor)
+    // Sizes baked into the tray ICO. Windows shell picks the closest match for
+    // the current DPI, so giving it 16/20/24/32/40/48 covers 100% through 300%
+    // scaling without runtime resampling.
+    private static readonly int[] TraySizes = { 16, 20, 24, 32, 40, 48 };
+
+    /// <summary>
+    /// Build a real multi-size ICO with 32bpp BGRA BMP frames + AND mask, then
+    /// load it through <c>new Icon(stream)</c>. This avoids
+    /// <c>Bitmap.GetHicon()</c>, which produces PNG-encoded HICONs that some
+    /// Windows shell paths (notably the system tray under Citrix and odd DPI
+    /// scaling combinations) refuse to render.
+    /// </summary>
+    public static System.Drawing.Icon RenderHandTrayIcon(Color fillColor)
+    {
+        var frames = new List<byte[]>(TraySizes.Length);
+        foreach (var s in TraySizes)
+            frames.Add(BuildIcoBmpFrame(s, fillColor));
+
+        using var ms = new MemoryStream();
+        using (var w = new BinaryWriter(ms, System.Text.Encoding.ASCII, leaveOpen: true))
+        {
+            // ICONDIR (6 bytes)
+            w.Write((ushort)0);                 // reserved
+            w.Write((ushort)1);                 // type: 1 = icon
+            w.Write((ushort)frames.Count);      // count
+
+            // ICONDIRENTRY x N (16 bytes each), then image data appended after
+            int dataOffset = 6 + frames.Count * 16;
+            for (int i = 0; i < frames.Count; i++)
+            {
+                int size = TraySizes[i];
+                w.Write((byte)(size >= 256 ? 0 : size));   // width
+                w.Write((byte)(size >= 256 ? 0 : size));   // height
+                w.Write((byte)0);                          // colour count = 0 (no palette)
+                w.Write((byte)0);                          // reserved
+                w.Write((ushort)1);                        // colour planes
+                w.Write((ushort)32);                       // bits per pixel
+                w.Write((uint)frames[i].Length);           // bytes in resource
+                w.Write((uint)dataOffset);                 // offset in file
+                dataOffset += frames[i].Length;
+            }
+
+            foreach (var f in frames) w.Write(f);
+        }
+
+        ms.Position = 0;
+        return new System.Drawing.Icon(ms);
+    }
+
+    // ICO BMP frame: BITMAPINFOHEADER + bottom-up 32bpp BGRA pixel rows + AND mask.
+    // biHeight is doubled to accommodate the mask. PBGRA32 from RenderHand is
+    // premultiplied; un-premultiply so the shell composites it correctly over
+    // any taskbar background.
+    private static byte[] BuildIcoBmpFrame(int size, Color fillColor)
     {
         var src = RenderHand(size, fillColor);
-        var encoder = new PngBitmapEncoder();
-        encoder.Frames.Add(BitmapFrame.Create(src));
-        using var ms = new MemoryStream();
-        encoder.Save(ms);
-        ms.Position = 0;
-        using var img = new System.Drawing.Bitmap(ms);
-        var hicon = img.GetHicon();
-        return System.Drawing.Icon.FromHandle(hicon);
+        int stride = size * 4;
+        var pixels = new byte[stride * size];
+        src.CopyPixels(pixels, stride, 0);
+
+        for (int i = 0; i < pixels.Length; i += 4)
+        {
+            byte a = pixels[i + 3];
+            if (a == 0)
+            {
+                pixels[i] = pixels[i + 1] = pixels[i + 2] = 0;
+            }
+            else if (a < 255)
+            {
+                pixels[i]     = (byte)Math.Min(255, pixels[i]     * 255 / a);
+                pixels[i + 1] = (byte)Math.Min(255, pixels[i + 1] * 255 / a);
+                pixels[i + 2] = (byte)Math.Min(255, pixels[i + 2] * 255 / a);
+            }
+        }
+
+        // AND mask: 1 bit per pixel, bottom-up, rows padded to 4 bytes.
+        // Modern 32bpp icons rely on alpha for blending and the mask is largely
+        // legacy, but the shell still requires it to be present and well-formed.
+        int andStride = ((size + 31) / 32) * 4;
+        var andMask = new byte[andStride * size];
+        for (int y = 0; y < size; y++)
+        {
+            for (int x = 0; x < size; x++)
+            {
+                if (pixels[(y * size + x) * 4 + 3] == 0)
+                {
+                    int row = (size - 1 - y) * andStride;
+                    andMask[row + x / 8] |= (byte)(0x80 >> (x % 8));
+                }
+            }
+        }
+
+        var flipped = new byte[stride * size];
+        for (int y = 0; y < size; y++)
+            Buffer.BlockCopy(pixels, y * stride, flipped, (size - 1 - y) * stride, stride);
+
+        using var ms = new MemoryStream(40 + flipped.Length + andMask.Length);
+        using var w = new BinaryWriter(ms);
+        w.Write((uint)40);                                 // biSize
+        w.Write(size);                                     // biWidth
+        w.Write(size * 2);                                 // biHeight (doubled for mask)
+        w.Write((ushort)1);                                // biPlanes
+        w.Write((ushort)32);                               // biBitCount
+        w.Write((uint)0);                                  // biCompression: BI_RGB
+        w.Write((uint)(flipped.Length + andMask.Length)); // biSizeImage
+        w.Write(0);                                        // biXPelsPerMeter
+        w.Write(0);                                        // biYPelsPerMeter
+        w.Write((uint)0);                                  // biClrUsed
+        w.Write((uint)0);                                  // biClrImportant
+        w.Write(flipped);
+        w.Write(andMask);
+        return ms.ToArray();
     }
 }
