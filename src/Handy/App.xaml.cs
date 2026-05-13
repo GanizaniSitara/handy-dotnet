@@ -303,11 +303,8 @@ public partial class App : Application
             asrMs = asrSw.ElapsedMilliseconds;
             rawLen = raw?.Length ?? 0;
             Log.Info($"Raw: \"{raw}\"");
-            var text = Services.TranscriptFilter.Filter(raw ?? string.Empty, _settings.AppLanguage, _settings.CustomFillerWords);
-            filtLen = text?.Length ?? 0;
-            Log.Info(raw == text
-                ? $"Filter: (no change) lang={_settings.AppLanguage}"
-                : $"Filter: \"{raw}\" -> \"{text}\" (lang={_settings.AppLanguage})");
+            var text = PostProcessTranscript(raw ?? string.Empty, _settings);
+            filtLen = text.Length;
             if (_settings.AppendTrailingSpace && !string.IsNullOrEmpty(text))
                 text += ' ';
             Log.Info($"Transcript: {text}");
@@ -327,6 +324,7 @@ public partial class App : Application
                     Log.Error($"Paste threw: {pex.Message}");
                     outcome = "pasteThrew";
                 }
+                CopyTranscriptToClipboardIfEnabled(text);
                 Log.Info("Flow: after paste");
             }
             else
@@ -419,6 +417,23 @@ public partial class App : Application
         {
             Log.Warn($"copy-last-transcription: clipboard set failed: {ex.Message}");
             _tray?.Notify("Handy.NET", "Copy failed — see log.");
+        }
+    }
+
+    private void CopyTranscriptToClipboardIfEnabled(string text)
+    {
+        if (!_settings.AlwaysCopyTranscriptToClipboard || string.IsNullOrEmpty(text))
+            return;
+
+        try
+        {
+            if (Dispatcher.CheckAccess()) Clipboard.SetText(text);
+            else Dispatcher.Invoke(() => Clipboard.SetText(text));
+            Log.Info($"always-copy-transcription: {text.Length} chars to clipboard");
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"always-copy-transcription: clipboard set failed: {ex.Message}");
         }
     }
 
@@ -535,8 +550,8 @@ public partial class App : Application
                 samples = vad.Trim(samples);
 
             var raw = asr.TranscribeAsync(samples).GetAwaiter().GetResult();
-            var text = Services.TranscriptFilter.Filter(raw ?? string.Empty, settings.AppLanguage, settings.CustomFillerWords);
-            Log.Info($"--transcribe-file: raw=\"{raw}\" filtered=\"{text}\"");
+            var text = PostProcessTranscript(raw ?? string.Empty, settings);
+            Log.Info($"--transcribe-file: raw=\"{raw}\" postProcessed=\"{text}\"");
             File.WriteAllText(outPath, text);
         }
         catch (Exception ex)
@@ -570,6 +585,28 @@ public partial class App : Application
         }
 
         return Path.Combine(localModels, "parakeet-tdt-0.6b-v2-int8");
+    }
+
+    private static string PostProcessTranscript(string raw, AppSettings settings)
+    {
+        var filtered = Services.TranscriptFilter.Filter(raw ?? string.Empty, settings.AppLanguage, settings.CustomFillerWords);
+        Log.Info(string.Equals(raw, filtered, StringComparison.Ordinal)
+            ? $"Filter: (no change) lang={settings.AppLanguage}"
+            : $"Filter: \"{raw}\" -> \"{filtered}\" (lang={settings.AppLanguage})");
+
+        var glossary = Services.DomainCorrectionService.Apply(filtered, settings.DomainCorrections);
+        if (glossary.Corrections.Count > 0)
+        {
+            var detail = string.Join("; ", glossary.Corrections.Select(c =>
+                $"\"{c.From}\" -> \"{c.To}\" x{c.Count}"));
+            Log.Info($"Glossary: \"{filtered}\" -> \"{glossary.Text}\" ({detail})");
+        }
+        else if (settings.DomainCorrections.Count > 0)
+        {
+            Log.Info($"Glossary: (no change) rules={settings.DomainCorrections.Count}");
+        }
+
+        return glossary.Text;
     }
 
     private static bool HasParakeetAssets(string dir) =>

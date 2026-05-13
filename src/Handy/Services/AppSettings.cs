@@ -43,6 +43,10 @@ public sealed class AppSettings
     /// <summary>DontModify | CopyToClipboard — upstream ClipboardHandling.</summary>
     public string ClipboardHandling { get; set; } = "DontModify";
 
+    /// <summary>When true, every successful final transcript is left on the clipboard
+    /// after paste/auto-submit handling, overriding ClipboardHandling restore semantics.</summary>
+    public bool AlwaysCopyTranscriptToClipboard { get; set; } = false;
+
     /// <summary>None | Enter | CtrlEnter.</summary>
     public string AutoSubmitKey { get; set; } = "None";
 
@@ -93,6 +97,10 @@ public sealed class AppSettings
     /// <summary>Custom filler-word list. null = use language defaults (upstream behaviour);
     /// empty list = disable filler-word removal entirely; non-empty list = use exactly these words.</summary>
     public List<string>? CustomFillerWords { get; set; } = null;
+
+    /// <summary>Explicit post-filter phrase corrections for domain vocabulary.
+    /// Empty by default so ordinary dictation is never changed unless the user opts in.</summary>
+    public List<DomainCorrection> DomainCorrections { get; set; } = new();
 
     [JsonIgnore]
     public string FilePath { get; private set; } = string.Empty;
@@ -151,6 +159,8 @@ public sealed class AppSettings
     {
         var migrated = false;
 
+        s.DomainCorrections ??= new List<DomainCorrection>();
+
         if (!hasSettingsVersion)
         {
             // Older saved settings kept the original VAD defaults, which were
@@ -192,4 +202,12 @@ public sealed class AppSettings
         }
     }
 
+}
+
+public sealed class DomainCorrection
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public bool Enabled { get; set; } = true;
+    public string From { get; set; } = string.Empty;
+    public string To { get; set; } = string.Empty;
 }

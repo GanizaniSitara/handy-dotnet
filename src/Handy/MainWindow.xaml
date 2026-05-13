@@ -257,6 +257,18 @@
                                 <Grid>
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="Always copy transcription to clipboard"
+                                               Style="{StaticResource Text.SettingLabel}"
+                                               ToolTip="Leave the final transcript on the clipboard after every successful dictation, even if paste restores the previous clipboard."/>
+                                    <CheckBox  Grid.Column="1" x:Name="AlwaysCopyTranscriptCheck"/>
+                                </Grid>
+                            </Border>
+                            <Border Style="{StaticResource SettingsRow}">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
                                         <ColumnDefinition Width="160"/>
                                     </Grid.ColumnDefinitions>
                                     <TextBlock Grid.Column="0" Text="Auto-submit" Style="{StaticResource Text.SettingLabel}"
@@ -266,6 +278,30 @@
                                         <ComboBoxItem Content="Enter"/>
                                         <ComboBoxItem Content="CtrlEnter"/>
                                     </ComboBox>
+                                </Grid>
+                            </Border>
+                        </StackPanel>
+                    </Border>
+
+                    <TextBlock Text="DOMAIN TERMS" Style="{StaticResource Text.SectionGroupTitle}"/>
+                    <Border Style="{StaticResource SettingsCard}">
+                        <StackPanel>
+                            <Border Style="{StaticResource SettingsRowFirst}">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="360"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="Corrections" Style="{StaticResource Text.SettingLabel}"
+                                               ToolTip="One per line: heard phrase => desired phrase. Matching is case-insensitive and phrase-bounded."/>
+                                    <TextBox   Grid.Column="1" x:Name="DomainCorrectionsBox"
+                                               Height="96"
+                                               AcceptsReturn="True"
+                                               VerticalScrollBarVisibility="Auto"
+                                               TextWrapping="Wrap"
+                                               FontFamily="Consolas"
+                                               FontSize="12"
+                                               ToolTip="Example: service now => ServiceNow"/>
                                 </Grid>
                             </Border>
                         </StackPanel>
