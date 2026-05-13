@@ -53,9 +53,7 @@ public partial class App : Application
         AppDomain.CurrentDomain.UnhandledException += (_, ex) =>
             Log.Error($"Unhandled: {ex.ExceptionObject}");
 
-        _dataDir = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-            "Handy");
+        _dataDir = ResolveDataDir(e.Args);
         Directory.CreateDirectory(_dataDir);
         Log.Init(Path.Combine(_dataDir, "handy.log"));
 
@@ -298,7 +296,7 @@ public partial class App : Application
             if (asr is null || !asr.IsReady) throw new InvalidOperationException("Transcription model not loaded.");
 
             var asrSw = Stopwatch.StartNew();
-            var raw = await asr.TranscribeAsync(samples);
+            var raw = await asr.TranscribeAsync(samples, CreateTranscriptionOptions(_settings));
             asrSw.Stop();
             asrMs = asrSw.ElapsedMilliseconds;
             rawLen = raw?.Length ?? 0;
@@ -549,7 +547,7 @@ public partial class App : Application
             if (vad.IsReady)
                 samples = vad.Trim(samples);
 
-            var raw = asr.TranscribeAsync(samples).GetAwaiter().GetResult();
+            var raw = asr.TranscribeAsync(samples, CreateTranscriptionOptions(settings)).GetAwaiter().GetResult();
             var text = PostProcessTranscript(raw ?? string.Empty, settings);
             Log.Info($"--transcribe-file: raw=\"{raw}\" postProcessed=\"{text}\"");
             File.WriteAllText(outPath, text);
@@ -585,6 +583,17 @@ public partial class App : Application
         }
 
         return Path.Combine(localModels, "parakeet-tdt-0.6b-v2-int8");
+    }
+
+    private static string ResolveDataDir(string[] args)
+    {
+        var overrideDir = ArgumentValue(args, "--data-dir");
+        if (!string.IsNullOrWhiteSpace(overrideDir))
+            return Path.GetFullPath(Environment.ExpandEnvironmentVariables(overrideDir));
+
+        return Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+            "Handy");
     }
 
     private static string PostProcessTranscript(string raw, AppSettings settings)
@@ -639,7 +648,31 @@ public partial class App : Application
 
     private static string ResolveWhisperModelsDir(string dataDir)
     {
+        var env = Environment.GetEnvironmentVariable("HANDY_WHISPER_MODEL_DIR");
+        if (!string.IsNullOrWhiteSpace(env) && Directory.Exists(env))
+            return env;
+
         return Path.Combine(dataDir, "models", "whisper");
+    }
+
+    private static TranscriptionOptions CreateTranscriptionOptions(AppSettings settings)
+    {
+        if (!settings.WhisperVocabularyPromptEnabled ||
+            !string.Equals(NormalizeBackend(settings.TranscriptionBackend), "Whisper", StringComparison.OrdinalIgnoreCase))
+        {
+            return TranscriptionOptions.None;
+        }
+
+        var prompt = WhisperVocabularyPromptBuilder.Build(settings.DomainCorrections);
+        return prompt.HasPrompt
+            ? new TranscriptionOptions(prompt.Prompt, prompt.TermCount, settings.WhisperCarryInitialPrompt)
+            : TranscriptionOptions.None;
+    }
+
+    private static string? ArgumentValue(string[] args, string name)
+    {
+        var index = Array.IndexOf(args, name);
+        return index >= 0 && index + 1 < args.Length ? args[index + 1] : null;
     }
 
     private static string DescribeActiveModelPath(AppSettings settings, string dataDir, string parakeetModelDir)

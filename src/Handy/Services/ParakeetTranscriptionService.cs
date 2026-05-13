@@ -98,7 +98,7 @@ public sealed class ParakeetTranscriptionService : ITranscriptionService
         }
     }
 
-    public Task<string> TranscribeAsync(float[] samples)
+    public Task<string> TranscribeAsync(float[] samples, TranscriptionOptions? options = null)
         => Task.Run(() => Transcribe(samples));
 
     private string Transcribe(float[] samples)
