@@ -6,6 +6,8 @@ obj/
 *.suo
 *.pdb
 publish/
+__pycache__/
+*.pyc
 
 # OS junk
 Thumbs.db

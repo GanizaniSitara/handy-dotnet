@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.ComponentModel;
 using System.Globalization;
 using System.Linq;
@@ -107,7 +108,9 @@ public partial class MainWindow : Window
             SelectComboByContent(PasteMethodCombo, _settings.PasteMethod);
             TrailingSpaceCheck.IsChecked = _settings.AppendTrailingSpace;
             SelectComboByContent(ClipboardCombo,  _settings.ClipboardHandling);
+            AlwaysCopyTranscriptCheck.IsChecked = _settings.AlwaysCopyTranscriptToClipboard;
             SelectComboByContent(AutoSubmitCombo, _settings.AutoSubmitKey);
+            DomainCorrectionsBox.Text = FormatDomainCorrections(_settings.DomainCorrections);
 
             PasteDelayBox.Text      = _settings.PasteDelayMs.ToString();
             DirectCharDelayBox.Text = _settings.DirectCharDelayMs.ToString();
@@ -190,7 +193,9 @@ public partial class MainWindow : Window
         _settings.PasteMethod         = (string?)((ComboBoxItem)PasteMethodCombo.SelectedItem)?.Content ?? "CtrlV";
         _settings.AppendTrailingSpace = TrailingSpaceCheck.IsChecked == true;
         _settings.ClipboardHandling   = (string?)((ComboBoxItem)ClipboardCombo.SelectedItem)?.Content  ?? "DontModify";
+        _settings.AlwaysCopyTranscriptToClipboard = AlwaysCopyTranscriptCheck.IsChecked == true;
         _settings.AutoSubmitKey       = (string?)((ComboBoxItem)AutoSubmitCombo.SelectedItem)?.Content ?? "None";
+        _settings.DomainCorrections   = ParseDomainCorrections(DomainCorrectionsBox.Text);
 
         if (int.TryParse(PasteDelayBox.Text,      out var ms)    && ms    is >= 0 and <= 2000) _settings.PasteDelayMs      = ms;
         if (int.TryParse(DirectCharDelayBox.Text, out var dc)    && dc    is >= 0 and <= 100)  _settings.DirectCharDelayMs = dc;
@@ -253,6 +258,68 @@ public partial class MainWindow : Window
     private void OnBeepVolumeChanged(object sender, System.Windows.RoutedPropertyChangedEventArgs<double> e)
     {
         if (BeepVolumePct is not null) BeepVolumePct.Text = $"{(int)(e.NewValue * 100)}%";
+    }
+
+    private static string FormatDomainCorrections(IEnumerable<DomainCorrection>? corrections)
+    {
+        if (corrections is null) return string.Empty;
+
+        return string.Join(Environment.NewLine, corrections
+            .Where(c => c is not null &&
+                        !string.IsNullOrWhiteSpace(c.From) &&
+                        !string.IsNullOrWhiteSpace(c.To))
+            .Select(c => $"{(c.Enabled ? string.Empty : "# ")}{c.From.Trim()} => {c.To.Trim()}"));
+    }
+
+    private static List<DomainCorrection> ParseDomainCorrections(string text)
+    {
+        var rules = new List<DomainCorrection>();
+        var lines = (text ?? string.Empty).Replace("\r\n", "\n").Split('\n');
+
+        for (var i = 0; i < lines.Length; i++)
+        {
+            var line = lines[i].Trim();
+            if (line.Length == 0)
+                continue;
+
+            var enabled = true;
+            if (line.StartsWith("#", StringComparison.Ordinal))
+            {
+                enabled = false;
+                line = line[1..].Trim();
+                if (line.Length == 0)
+                    continue;
+            }
+
+            var separator = line.IndexOf("=>", StringComparison.Ordinal);
+            var separatorLength = 2;
+            if (separator < 0)
+            {
+                separator = line.IndexOf("->", StringComparison.Ordinal);
+                separatorLength = 2;
+            }
+
+            if (separator < 0)
+            {
+                if (!enabled)
+                    continue;
+
+                Log.Warn($"Ignored domain correction line {i + 1}: expected 'heard phrase => desired phrase'.");
+                continue;
+            }
+
+            var from = line[..separator].Trim();
+            var to = line[(separator + separatorLength)..].Trim();
+            if (string.IsNullOrWhiteSpace(from) || string.IsNullOrWhiteSpace(to))
+            {
+                Log.Warn($"Ignored domain correction line {i + 1}: both sides must be non-empty.");
+                continue;
+            }
+
+            rules.Add(new DomainCorrection { Enabled = enabled, From = from, To = to });
+        }
+
+        return rules;
     }
 
     private void OnModelSelectionChanged(object sender, SelectionChangedEventArgs e)
