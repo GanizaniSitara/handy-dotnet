@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -208,6 +209,94 @@ public sealed class DomainCorrection
 {
     [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
     public bool Enabled { get; set; } = true;
+
+    /// <summary>Legacy single-variant field. Kept for settings compatibility;
+    /// new UI edits write the first variant here as well.</summary>
     public string From { get; set; } = string.Empty;
+
+    /// <summary>Canonical replacement text.</summary>
     public string To { get; set; } = string.Empty;
+
+    /// <summary>Heard forms that may be rewritten to the canonical term.</summary>
+    public List<string> Variants { get; set; } = new();
+
+    /// <summary>At least one of these phrases must be near the matched variant.
+    /// Empty means the rule is ungated.</summary>
+    public List<string> RequiredContext { get; set; } = new();
+
+    /// <summary>If any of these phrases are near the matched variant, the rule is skipped.</summary>
+    public List<string> BlockedContext { get; set; } = new();
+
+    public bool CaseSensitive { get; set; } = false;
+
+    public string Notes { get; set; } = string.Empty;
+
+    [JsonIgnore]
+    public string VariantsText
+    {
+        get => Join(EffectiveVariants());
+        set
+        {
+            Variants = SplitList(value);
+            From = Variants.Count > 0 ? Variants[0] : string.Empty;
+        }
+    }
+
+    [JsonIgnore]
+    public string RequiredContextText
+    {
+        get => Join(RequiredContext);
+        set => RequiredContext = SplitList(value);
+    }
+
+    [JsonIgnore]
+    public string BlockedContextText
+    {
+        get => Join(BlockedContext);
+        set => BlockedContext = SplitList(value);
+    }
+
+    public List<string> EffectiveVariants()
+    {
+        var values = Clean(Variants);
+        if (values.Count == 0 && !string.IsNullOrWhiteSpace(From))
+            values.Add(From.Trim());
+        return values;
+    }
+
+    public DomainCorrection Clone() => new()
+    {
+        Enabled = Enabled,
+        From = From,
+        To = To,
+        Variants = Clean(Variants),
+        RequiredContext = Clean(RequiredContext),
+        BlockedContext = Clean(BlockedContext),
+        CaseSensitive = CaseSensitive,
+        Notes = Notes,
+    };
+
+    public void NormalizeForSave()
+    {
+        Variants = EffectiveVariants();
+        RequiredContext = Clean(RequiredContext);
+        BlockedContext = Clean(BlockedContext);
+        From = Variants.Count > 0 ? Variants[0] : string.Empty;
+        To = To?.Trim() ?? string.Empty;
+        Notes = Notes?.Trim() ?? string.Empty;
+    }
+
+    private static string Join(IEnumerable<string>? values) =>
+        string.Join("; ", Clean(values));
+
+    private static List<string> SplitList(string? text) =>
+        Clean((text ?? string.Empty)
+            .Split(new[] { ';', ',' }, System.StringSplitOptions.RemoveEmptyEntries));
+
+    private static List<string> Clean(IEnumerable<string>? values) =>
+        (values ?? Enumerable.Empty<string>())
+            .Select(v => v?.Trim() ?? string.Empty)
+            .Where(v => v.Length > 0)
+            .Distinct(System.StringComparer.OrdinalIgnoreCase)
+            .ToList();
 }

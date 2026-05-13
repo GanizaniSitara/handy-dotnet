@@ -598,7 +598,7 @@ public partial class App : Application
         if (glossary.Corrections.Count > 0)
         {
             var detail = string.Join("; ", glossary.Corrections.Select(c =>
-                $"\"{c.From}\" -> \"{c.To}\" x{c.Count}"));
+                $"\"{c.From}\" -> \"{c.To}\" x{c.Count} ({c.Reason})"));
             Log.Info($"Glossary: \"{filtered}\" -> \"{glossary.Text}\" ({detail})");
         }
         else if (settings.DomainCorrections.Count > 0)
