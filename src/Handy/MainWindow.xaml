@@ -287,22 +287,39 @@
                     <Border Style="{StaticResource SettingsCard}">
                         <StackPanel>
                             <Border Style="{StaticResource SettingsRowFirst}">
-                                <Grid>
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="*"/>
-                                        <ColumnDefinition Width="360"/>
-                                    </Grid.ColumnDefinitions>
-                                    <TextBlock Grid.Column="0" Text="Corrections" Style="{StaticResource Text.SettingLabel}"
-                                               ToolTip="One per line: heard phrase => desired phrase. Matching is case-insensitive and phrase-bounded."/>
-                                    <TextBox   Grid.Column="1" x:Name="DomainCorrectionsBox"
-                                               Height="96"
-                                               AcceptsReturn="True"
-                                               VerticalScrollBarVisibility="Auto"
-                                               TextWrapping="Wrap"
-                                               FontFamily="Consolas"
-                                               FontSize="12"
-                                               ToolTip="Example: service now => ServiceNow"/>
-                                </Grid>
+                                <DataGrid x:Name="DomainCorrectionsGrid"
+                                          Height="190"
+                                          AutoGenerateColumns="False"
+                                          CanUserAddRows="True"
+                                          CanUserDeleteRows="True"
+                                          HeadersVisibility="Column"
+                                          GridLinesVisibility="Horizontal"
+                                          HorizontalScrollBarVisibility="Auto"
+                                          VerticalScrollBarVisibility="Auto">
+                                    <DataGrid.Columns>
+                                        <DataGridCheckBoxColumn Header="On"
+                                                                Binding="{Binding Enabled, UpdateSourceTrigger=PropertyChanged}"
+                                                                Width="44"/>
+                                        <DataGridTextColumn Header="Canonical"
+                                                            Binding="{Binding To, UpdateSourceTrigger=PropertyChanged}"
+                                                            Width="130"/>
+                                        <DataGridTextColumn Header="Variants"
+                                                            Binding="{Binding VariantsText, UpdateSourceTrigger=PropertyChanged}"
+                                                            Width="170"/>
+                                        <DataGridTextColumn Header="Require Any"
+                                                            Binding="{Binding RequiredContextText, UpdateSourceTrigger=PropertyChanged}"
+                                                            Width="140"/>
+                                        <DataGridTextColumn Header="Block"
+                                                            Binding="{Binding BlockedContextText, UpdateSourceTrigger=PropertyChanged}"
+                                                            Width="110"/>
+                                        <DataGridCheckBoxColumn Header="Case"
+                                                                Binding="{Binding CaseSensitive, UpdateSourceTrigger=PropertyChanged}"
+                                                                Width="52"/>
+                                        <DataGridTextColumn Header="Notes"
+                                                            Binding="{Binding Notes, UpdateSourceTrigger=PropertyChanged}"
+                                                            Width="180"/>
+                                    </DataGrid.Columns>
+                                </DataGrid>
                             </Border>
                         </StackPanel>
                     </Border>

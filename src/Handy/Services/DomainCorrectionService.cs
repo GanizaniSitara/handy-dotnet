@@ -13,8 +13,9 @@ namespace Handy.Services;
 public static class DomainCorrectionService
 {
     private const string BoundaryChars = @"\p{L}\p{N}_'\-";
+    private const int ContextWindowChars = 96;
 
-    public sealed record AppliedCorrection(string From, string To, int Count);
+    public sealed record AppliedCorrection(string From, string To, int Count, string Reason);
     public sealed record Result(string Text, IReadOnlyList<AppliedCorrection> Corrections);
 
     public static Result Apply(string? text, IReadOnlyList<DomainCorrection>? corrections)
@@ -30,27 +31,85 @@ public static class DomainCorrectionService
             if (correction is null || !correction.Enabled)
                 continue;
 
-            var from = (correction.From ?? string.Empty).Trim();
             var to = (correction.To ?? string.Empty).Trim();
-            if (string.IsNullOrWhiteSpace(from) || string.IsNullOrWhiteSpace(to))
+            var variants = correction.EffectiveVariants();
+            if (variants.Count == 0 || string.IsNullOrWhiteSpace(to))
                 continue;
 
-            var regex = BuildPhraseRegex(from);
-            var count = 0;
-            output = regex.Replace(output, _ =>
+            foreach (var from in variants)
             {
-                count++;
-                return to;
-            });
+                var regex = BuildPhraseRegex(from, correction.CaseSensitive);
+                var count = 0;
+                var reasons = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                output = regex.Replace(output, match =>
+                {
+                    var context = ContextAround(output, match);
+                    if (!ContextAllows(context, correction, out var reason))
+                        return match.Value;
 
-            if (count > 0)
-                applied.Add(new AppliedCorrection(from, to, count));
+                    count++;
+                    reasons.Add(reason);
+                    return to;
+                });
+
+                if (count > 0)
+                    applied.Add(new AppliedCorrection(from, to, count, string.Join(", ", reasons)));
+            }
         }
 
         return new Result(output, applied);
     }
 
-    private static Regex BuildPhraseRegex(string phrase)
+    private static bool ContextAllows(string context, DomainCorrection correction, out string reason)
+    {
+        var blocked = FirstContextMatch(context, correction.BlockedContext, correction.CaseSensitive);
+        if (blocked is not null)
+        {
+            reason = $"blocked={blocked}";
+            return false;
+        }
+
+        var required = (correction.RequiredContext ?? new List<string>())
+            .Where(p => !string.IsNullOrWhiteSpace(p))
+            .ToList();
+        if (required.Count == 0)
+        {
+            reason = "ungated";
+            return true;
+        }
+
+        var match = FirstContextMatch(context, required, correction.CaseSensitive);
+        if (match is not null)
+        {
+            reason = $"required={match}";
+            return true;
+        }
+
+        reason = "missing-required-context";
+        return false;
+    }
+
+    private static string? FirstContextMatch(string context, IEnumerable<string>? phrases, bool caseSensitive)
+    {
+        foreach (var phrase in phrases ?? Enumerable.Empty<string>())
+        {
+            var trimmed = phrase.Trim();
+            if (trimmed.Length == 0)
+                continue;
+            if (BuildPhraseRegex(trimmed, caseSensitive).IsMatch(context))
+                return trimmed;
+        }
+        return null;
+    }
+
+    private static string ContextAround(string text, Match match)
+    {
+        var start = Math.Max(0, match.Index - ContextWindowChars);
+        var end = Math.Min(text.Length, match.Index + match.Length + ContextWindowChars);
+        return text[start..end];
+    }
+
+    private static Regex BuildPhraseRegex(string phrase, bool caseSensitive)
     {
         var tokens = Regex.Split(phrase.Trim(), @"\s+")
             .Where(t => !string.IsNullOrWhiteSpace(t))
@@ -60,6 +119,8 @@ public static class DomainCorrectionService
 
         return new Regex(
             $@"(?<![{BoundaryChars}]){body}(?![{BoundaryChars}])",
-            RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+            RegexOptions.Compiled |
+            RegexOptions.CultureInvariant |
+            (caseSensitive ? RegexOptions.None : RegexOptions.IgnoreCase));
     }
 }

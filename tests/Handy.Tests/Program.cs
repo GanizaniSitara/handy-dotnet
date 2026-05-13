@@ -69,6 +69,48 @@ var tests = new[]
         new[] { Rule("contoso", "Contoso") },
         "The contoso's plan references Contoso.",
         1),
+
+    new TestCase(
+        "required context gates ambiguous term",
+        "Please create a service now ticket.",
+        new[] { Rule("service now", "ServiceNow", requiredContext: new[] { "ticket" }) },
+        "Please create a ServiceNow ticket.",
+        1),
+
+    new TestCase(
+        "missing required context leaves normal words",
+        "We can service now and review later.",
+        new[] { Rule("service now", "ServiceNow", requiredContext: new[] { "ticket" }) },
+        "We can service now and review later.",
+        0),
+
+    new TestCase(
+        "blocked context suppresses ambiguous term",
+        "We can service now please.",
+        new[] { Rule("service now", "ServiceNow", blockedContext: new[] { "please" }) },
+        "We can service now please.",
+        0),
+
+    new TestCase(
+        "variants share canonical term",
+        "Open a snow incident ticket.",
+        new[]
+        {
+            Rule(
+                "service now",
+                "ServiceNow",
+                variants: new[] { "service now", "snow" },
+                requiredContext: new[] { "ticket" }),
+        },
+        "Open a ServiceNow incident ticket.",
+        1),
+
+    new TestCase(
+        "case sensitive matching",
+        "abc ABC abc.",
+        new[] { Rule("abc", "ABC", caseSensitive: true) },
+        "ABC ABC ABC.",
+        2),
 };
 
 foreach (var test in tests)
@@ -82,8 +124,26 @@ AssertDisabledRulePersists();
 
 Console.WriteLine($"Domain correction fixture passed ({tests.Length} correction cases plus settings round-trip).");
 
-static DomainCorrection Rule(string from, string to, bool enabled = true) =>
-    new() { Enabled = enabled, From = from, To = to };
+static DomainCorrection Rule(
+    string from,
+    string to,
+    bool enabled = true,
+    string[]? variants = null,
+    string[]? requiredContext = null,
+    string[]? blockedContext = null,
+    bool caseSensitive = false,
+    string notes = "") =>
+    new()
+    {
+        Enabled = enabled,
+        From = from,
+        To = to,
+        Variants = variants?.ToList() ?? new List<string>(),
+        RequiredContext = requiredContext?.ToList() ?? new List<string>(),
+        BlockedContext = blockedContext?.ToList() ?? new List<string>(),
+        CaseSensitive = caseSensitive,
+        Notes = notes,
+    };
 
 static void AssertEqual<T>(T expected, T actual, string label)
 {
@@ -103,16 +163,30 @@ static void AssertDisabledRulePersists()
         settings.AlwaysCopyTranscriptToClipboard = true;
         settings.DomainCorrections = new List<DomainCorrection>
         {
-            Rule("service now", "ServiceNow", enabled: false),
+            Rule(
+                "service now",
+                "ServiceNow",
+                enabled: false,
+                variants: new[] { "service now", "snow" },
+                requiredContext: new[] { "ticket", "incident" },
+                blockedContext: new[] { "weather" },
+                caseSensitive: true,
+                notes: "ITSM product"),
         };
         settings.Save();
 
         var reloaded = AppSettings.Load(dir);
         AssertEqual(true, reloaded.AlwaysCopyTranscriptToClipboard, "settings round-trip: always-copy clipboard");
         AssertEqual(1, reloaded.DomainCorrections.Count, "settings round-trip: rule count");
-        AssertEqual(false, reloaded.DomainCorrections[0].Enabled, "settings round-trip: disabled state");
-        AssertEqual("service now", reloaded.DomainCorrections[0].From, "settings round-trip: from");
-        AssertEqual("ServiceNow", reloaded.DomainCorrections[0].To, "settings round-trip: to");
+        var rule = reloaded.DomainCorrections[0];
+        AssertEqual(false, rule.Enabled, "settings round-trip: disabled state");
+        AssertEqual("service now", rule.From, "settings round-trip: from");
+        AssertEqual("ServiceNow", rule.To, "settings round-trip: to");
+        AssertEqual("service now; snow", string.Join("; ", rule.Variants), "settings round-trip: variants");
+        AssertEqual("ticket; incident", string.Join("; ", rule.RequiredContext), "settings round-trip: required context");
+        AssertEqual("weather", string.Join("; ", rule.BlockedContext), "settings round-trip: blocked context");
+        AssertEqual(true, rule.CaseSensitive, "settings round-trip: case sensitivity");
+        AssertEqual("ITSM product", rule.Notes, "settings round-trip: notes");
     }
     finally
     {
