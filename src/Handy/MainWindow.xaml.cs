@@ -93,6 +93,10 @@ public partial class MainWindow : Window
         var whisperSelected = string.Equals(pending.Backend, "Whisper", StringComparison.OrdinalIgnoreCase);
         WhisperModelCombo.IsEnabled = whisperSelected;
         WhisperModelCombo.Opacity = whisperSelected ? 1.0 : 0.55;
+        WhisperPromptCheck.IsEnabled = whisperSelected;
+        WhisperPromptCheck.Opacity = whisperSelected ? 1.0 : 0.55;
+        WhisperCarryPromptCheck.IsEnabled = whisperSelected;
+        WhisperCarryPromptCheck.Opacity = whisperSelected ? 1.0 : 0.55;
     }
 
     private void LoadFromSettings()
@@ -148,6 +152,8 @@ public partial class MainWindow : Window
 
             SelectComboByContent(TranscriptionBackendCombo, _settings.TranscriptionBackend);
             SelectComboByContent(WhisperModelCombo, WhisperTranscriptionService.NormalizeModelName(_settings.WhisperModel));
+            WhisperPromptCheck.IsChecked = _settings.WhisperVocabularyPromptEnabled;
+            WhisperCarryPromptCheck.IsChecked = _settings.WhisperCarryInitialPrompt;
             SelectComboByContent(DownloadWhisperModelCombo, WhisperTranscriptionService.NormalizeModelName(_settings.WhisperModel));
             RefreshModelStatus();
         }
@@ -243,6 +249,8 @@ public partial class MainWindow : Window
 
         _settings.TranscriptionBackend = (string?)((ComboBoxItem)TranscriptionBackendCombo.SelectedItem)?.Content ?? "Parakeet";
         _settings.WhisperModel = (string?)((ComboBoxItem)WhisperModelCombo.SelectedItem)?.Content ?? "base";
+        _settings.WhisperVocabularyPromptEnabled = WhisperPromptCheck.IsChecked == true;
+        _settings.WhisperCarryInitialPrompt = WhisperCarryPromptCheck.IsChecked == true;
 
         ((App)Application.Current).ReloadSettings();
         RefreshModelStatus();

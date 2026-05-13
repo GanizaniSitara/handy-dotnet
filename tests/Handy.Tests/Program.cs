@@ -121,8 +121,9 @@ foreach (var test in tests)
 }
 
 AssertDisabledRulePersists();
+AssertWhisperVocabularyPromptBuilder();
 
-Console.WriteLine($"Domain correction fixture passed ({tests.Length} correction cases plus settings round-trip).");
+Console.WriteLine($"Domain correction fixture passed ({tests.Length} correction cases plus settings and prompt-builder checks).");
 
 static DomainCorrection Rule(
     string from,
@@ -161,6 +162,8 @@ static void AssertDisabledRulePersists()
     {
         var settings = AppSettings.Load(dir);
         settings.AlwaysCopyTranscriptToClipboard = true;
+        settings.WhisperVocabularyPromptEnabled = true;
+        settings.WhisperCarryInitialPrompt = false;
         settings.DomainCorrections = new List<DomainCorrection>
         {
             Rule(
@@ -179,6 +182,8 @@ static void AssertDisabledRulePersists()
         AssertEqual(true, reloaded.AlwaysCopyTranscriptToClipboard, "settings round-trip: always-copy clipboard");
         AssertEqual(1, reloaded.DomainCorrections.Count, "settings round-trip: rule count");
         var rule = reloaded.DomainCorrections[0];
+        AssertEqual(true, reloaded.WhisperVocabularyPromptEnabled, "settings round-trip: whisper vocabulary prompt");
+        AssertEqual(false, reloaded.WhisperCarryInitialPrompt, "settings round-trip: whisper carry prompt");
         AssertEqual(false, rule.Enabled, "settings round-trip: disabled state");
         AssertEqual("service now", rule.From, "settings round-trip: from");
         AssertEqual("ServiceNow", rule.To, "settings round-trip: to");
@@ -192,6 +197,26 @@ static void AssertDisabledRulePersists()
     {
         try { Directory.Delete(dir, recursive: true); } catch { }
     }
+}
+
+static void AssertWhisperVocabularyPromptBuilder()
+{
+    var result = WhisperVocabularyPromptBuilder.Build(new[]
+    {
+        Rule("service now", "ServiceNow", variants: new[] { "service now", "snow" }),
+        Rule("azure dev ops", "Azure DevOps"),
+        Rule("disabled", "DisabledTerm", enabled: false),
+        Rule("duplicate", "servicenow"),
+    });
+
+    AssertEqual(2, result.TermCount, "whisper prompt: term count");
+    AssertEqual(
+        "Recognize these domain terms exactly when spoken: Azure DevOps; ServiceNow.",
+        result.Prompt,
+        "whisper prompt: canonical terms only");
+
+    var empty = WhisperVocabularyPromptBuilder.Build(new[] { Rule("disabled", "DisabledTerm", enabled: false) });
+    AssertEqual(false, empty.HasPrompt, "whisper prompt: disabled rules omitted");
 }
 
 internal sealed record TestCase(

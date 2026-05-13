@@ -7,5 +7,5 @@ public interface ITranscriptionService : IDisposable
 {
     bool IsReady { get; }
 
-    Task<string> TranscribeAsync(float[] samples);
+    Task<string> TranscribeAsync(float[] samples, TranscriptionOptions? options = null);
 }

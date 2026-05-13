@@ -91,6 +91,13 @@ public sealed class AppSettings
     /// <summary>tiny | base | small. Used only when TranscriptionBackend = Whisper.</summary>
     public string WhisperModel { get; set; } = "base";
 
+    /// <summary>When using Whisper, seed the recognizer with canonical glossary terms.</summary>
+    public bool WhisperVocabularyPromptEnabled { get; set; } = false;
+
+    /// <summary>Repeat the initial vocabulary prompt across Whisper decode windows.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public bool WhisperCarryInitialPrompt { get; set; } = true;
+
     /// <summary>App language code for post-transcription filler-word removal ("en", "pt-BR", …).
     /// Matches upstream Handy's app language — selects which filler words get stripped.</summary>
     public string AppLanguage { get; set; } = "en";

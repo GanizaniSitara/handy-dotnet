@@ -44,17 +44,26 @@ public sealed class WhisperTranscriptionService : ITranscriptionService
         }
     }
 
-    public async Task<string> TranscribeAsync(float[] samples)
+    public async Task<string> TranscribeAsync(float[] samples, TranscriptionOptions? options = null)
     {
         if (!IsReady) throw new InvalidOperationException("Whisper model not loaded.");
 
         var sw = Stopwatch.StartNew();
         var text = new StringBuilder();
 
-        using var processor = _factory!.CreateBuilder()
+        options ??= TranscriptionOptions.None;
+        var builder = _factory!.CreateBuilder()
             .WithLanguageDetection()
-            .WithNoContext()
-            .Build();
+            .WithNoContext();
+
+        if (options.HasWhisperPrompt)
+        {
+            builder.WithPrompt(options.WhisperPrompt);
+            if (options.WhisperCarryInitialPrompt)
+                builder.WithCarryInitialPrompt(true);
+        }
+
+        using var processor = builder.Build();
 
         await foreach (var segment in processor.ProcessAsync(samples).ConfigureAwait(false))
         {
@@ -62,7 +71,10 @@ public sealed class WhisperTranscriptionService : ITranscriptionService
         }
 
         var result = text.ToString().Trim();
-        Log.Info($"Whisper {_modelName}: {samples.Length} samples in {sw.ElapsedMilliseconds} ms");
+        var promptDetail = options.HasWhisperPrompt
+            ? $"; promptTerms={options.WhisperPromptTermCount} promptChars={options.WhisperPrompt.Length} carryPrompt={options.WhisperCarryInitialPrompt}"
+            : string.Empty;
+        Log.Info($"Whisper {_modelName}: {samples.Length} samples in {sw.ElapsedMilliseconds} ms{promptDetail}");
         return result;
     }
 

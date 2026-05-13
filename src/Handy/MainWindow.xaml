@@ -503,6 +503,30 @@
                             <Border Style="{StaticResource SettingsRow}">
                                 <Grid>
                                     <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="220"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="Vocabulary prompt" Style="{StaticResource Text.SettingLabel}"/>
+                                    <CheckBox Grid.Column="1" x:Name="WhisperPromptCheck"
+                                              Content="Use glossary terms"
+                                              VerticalAlignment="Center"/>
+                                </Grid>
+                            </Border>
+                            <Border Style="{StaticResource SettingsRow}">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="220"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="Carry prompt" Style="{StaticResource Text.SettingLabel}"/>
+                                    <CheckBox Grid.Column="1" x:Name="WhisperCarryPromptCheck"
+                                              Content="Repeat across segments"
+                                              VerticalAlignment="Center"/>
+                                </Grid>
+                            </Border>
+                            <Border Style="{StaticResource SettingsRow}">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="110"/>
                                         <ColumnDefinition Width="*"/>
                                     </Grid.ColumnDefinitions>
