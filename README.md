@@ -18,7 +18,10 @@ Same UX as upstream — global hotkey → local speech-to-text → pasted into t
 active window. Parakeet remains the default backend, reading the same
 `parakeet-tdt-0.6b-v*-int8/` directory layout upstream ships. Whisper is also
 available as a local GGML/whisper.cpp backend through Whisper.net.
-Settings file, history, and on-disk Parakeet models are cross-compatible.
+Settings file, history, and on-disk Parakeet models are cross-compatible. The
+port also includes a local domain glossary for business terms, optional Whisper
+vocabulary prompting from that glossary, and clipboard recovery options for
+terminal/VDI paste failures.
 
 **Upstream stack:** Rust + Tauri + WebView2 + React frontend + `transcribe-rs`.
 **This port:** .NET 8 WPF + NAudio + Microsoft.ML.OnnxRuntime.
@@ -55,6 +58,13 @@ transcribe-rs uses. That means:
 The Whisper path uses Whisper.net/whisper.cpp with GGML models. Set
 `WhisperModel` to `"tiny"`, `"base"`, or `"small"`; models live under
 `%APPDATA%\Handy\models\whisper\` as `ggml-{model}.bin`.
+
+When the backend is Whisper, the Models tab can enable a vocabulary prompt built
+from enabled domain-glossary canonical terms. This is a recognizer-level bias
+using Whisper.net's initial-prompt support. It is opt-in, logged when active,
+and does not affect Parakeet, whose current ONNX greedy decoder has no prompt or
+hotword input. See [`docs/asr-vocabulary-biasing.md`](docs/asr-vocabulary-biasing.md)
+for the evaluation path and Parakeet fine-tuning recommendation.
 
 Pipeline summary:
 
@@ -153,6 +163,19 @@ Download button or place the file manually, then apply the setting again.
 2. Put the cursor in any text field.
 3. Press the hotkey. Speak. Press it again (toggle) or release (if push-to-talk is on).
 4. The transcript goes to the clipboard and is pasted via the configured paste method.
+5. If paste fails, use the tray menu or **Ctrl + Alt + Shift + Space** to copy
+   the last transcript back to the clipboard.
+
+Useful settings:
+
+- **Always copy transcription to clipboard** keeps every successful transcript
+  on the clipboard after paste.
+- **Domain terms** in Advanced lets you define canonical business terms,
+  mistranscribed variants, required context, blocked context, case sensitivity,
+  and notes. Applied rules are logged separately from raw ASR and filler/stutter
+  filtering.
+- **Vocabulary prompt** in Models uses the enabled glossary canonical terms as
+  a Whisper-only recognition prompt.
 
 ### CLI signals (forwarded to the running instance)
 
@@ -171,7 +194,9 @@ Handy.exe --transcribe-file path\to\clip.wav
 ```
 
 Writes the transcript to `%APPDATA%\Handy\last-transcript.txt` and exits. Any
-WAV is accepted (auto-converted to 16 kHz mono float).
+WAV is accepted (auto-converted to 16 kHz mono float). Bench tooling can pass
+`--data-dir path\to\isolated\data` so file-mode runs do not mutate the user's
+real settings.
 
 ## Architecture
 
@@ -184,6 +209,10 @@ App.xaml.cs
  ├─ ParakeetTranscriptionService ONNX Runtime: preproc / encoder / decoder+joiner
  │    ├─ ParakeetTokenizer       vocab.txt + ▁-to-space + post-process regex
  ├─ WhisperTranscriptionService  Whisper.net / whisper.cpp GGML backend
+ ├─ WhisperVocabularyPromptBuilder
+ │                              glossary canonical terms → Whisper prompt
+ ├─ TranscriptFilter             filler removal + stutter collapse
+ ├─ DomainCorrectionService      context-aware domain glossary normalization
  ├─ ModelDownloadService         Parakeet tarballs + Whisper GGML downloads
  ├─ WavIo                        file-mode WAV loader with auto-conversion
  ├─ TextInjectionService         Clipboard + SendInput (CtrlV / ShiftInsert / CtrlShiftV / Direct)
@@ -209,8 +238,9 @@ Implemented:
 - Mic capture with device picker.
 - Parakeet transcription (CPU).
 - Paste methods: Ctrl+V, Direct, Ctrl+Shift+V, Shift+Insert, None.
-- Paste delay + trailing-space option.
-- Tray menu with Settings / Copy Last Transcript / Cancel / Quit.
+- Paste delay + trailing-space + always-copy-to-clipboard options.
+- Copy-last-transcript hotkey and tray action.
+- Tray menu with Settings / History / Copy Last Transcript / Cancel / Quit.
 - Recording overlay (top / bottom / none), click-through.
 - Audio feedback beeps on start / stop / cancel.
 - Autostart on login (HKCU Run key).
@@ -218,11 +248,14 @@ Implemented:
 - Transcript history persisted to JSON.
 - VAD (Silero) trim before transcription.
 - Whisper transcription via Whisper.net (tiny/base/small GGML).
+- Context-aware domain glossary correction.
+- Optional Whisper vocabulary prompt from glossary canonical terms.
+- ASR vocabulary A/B bench in `bench/asr_vocab_ab.py`.
+- Parallel-history WER bench in `bench/wer_bench.py`.
 
 Deferred:
 - Proper TDT duration-head consumption (matches transcribe-rs behaviour — vocab logits only).
 - Post-process via OpenAI-compatible LLM.
-- Rich history UI.
 - Theme-aware tray icons.
 
 ## Credits
