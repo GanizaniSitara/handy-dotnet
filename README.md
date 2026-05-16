@@ -180,6 +180,10 @@ Useful settings:
   filtering.
 - **Vocabulary prompt** in Models uses the enabled glossary canonical terms as
   a Whisper-only recognition prompt.
+- **Background recognition** can be enabled in `settings.json` with
+  `"backgroundRecognitionEnabled": true`. It is experimental: Handy starts ASR
+  during natural pauses, then uses that result as the final transcript prefix
+  and only decodes the audio tail captured after the snapshot on hotkey release.
 
 ### CLI signals (forwarded to the running instance)
 
@@ -201,6 +205,18 @@ Writes the transcript to `%APPDATA%\Handy\last-transcript.txt` and exits. Any
 WAV is accepted (auto-converted to 16 kHz mono float). Bench tooling can pass
 `--data-dir path\to\isolated\data` so file-mode runs do not mutate the user's
 real settings.
+
+To compare additive background recognition against the old full-buffer ASR wait:
+
+```cmd
+Handy.exe --bench-additive path\to\clip.wav --split 0.70
+```
+
+This writes `%APPDATA%\Handy\last-bench-additive.txt` and prints cold full-pass
+time vs. prefix-pass and tail-pass timings. The tail pass approximates the
+post-hotkey-release wait when the prefix pass completes during recording. See
+[`docs/asr-latency-reductions.md`](docs/asr-latency-reductions.md) for the
+current measurements and tradeoffs.
 
 ## Architecture
 
@@ -255,6 +271,8 @@ Implemented:
 - Context-aware domain glossary correction.
 - Optional Whisper vocabulary prompt from glossary canonical terms.
 - ASR vocabulary A/B bench in `bench/asr_vocab_ab.py`.
+- Experimental background recognition during pauses for lower release-to-paste
+  latency.
 - Parallel-history WER bench in `bench/wer_bench.py`.
 
 Deferred:
