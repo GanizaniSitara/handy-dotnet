@@ -56,7 +56,8 @@ transcribe-rs uses. That means:
 - ~500 ms inference for ~10 s of audio on CPU (one thread) with the V2 int8 model.
 
 The Whisper path uses Whisper.net/whisper.cpp with GGML models. Set
-`WhisperModel` to `"tiny"`, `"base"`, or `"small"`; models live under
+`WhisperModel` to `"tiny.en"`, `"tiny"`, `"base"`, `"base.en"`, `"small"`,
+or `"small.en"`; models live under
 `%APPDATA%\Handy\models\whisper\` as `ggml-{model}.bin`.
 
 When the backend is Whisper, the Models tab can enable a vocabulary prompt built
@@ -146,8 +147,11 @@ The selectable sizes are `"tiny"`, `"base"`, and `"small"`; the default is
 
 ```
 %APPDATA%\Handy\models\whisper\ggml-tiny.bin
+%APPDATA%\Handy\models\whisper\ggml-tiny.en.bin
 %APPDATA%\Handy\models\whisper\ggml-base.bin
+%APPDATA%\Handy\models\whisper\ggml-base.en.bin
 %APPDATA%\Handy\models\whisper\ggml-small.bin
+%APPDATA%\Handy\models\whisper\ggml-small.en.bin
 ```
 
 The Models tab can download them through Whisper.net. If the selected file is

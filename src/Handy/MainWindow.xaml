@@ -494,6 +494,7 @@
                                     </Grid.ColumnDefinitions>
                                     <TextBlock Grid.Column="0" Text="Whisper model" Style="{StaticResource Text.SettingLabel}"/>
                                     <ComboBox Grid.Column="1" x:Name="WhisperModelCombo" SelectionChanged="OnModelSelectionChanged">
+                                        <ComboBoxItem Content="tiny.en"/>
                                         <ComboBoxItem Content="tiny"/>
                                         <ComboBoxItem Content="base"/>
                                         <ComboBoxItem Content="small"/>
@@ -598,7 +599,8 @@
                                 <StackPanel Orientation="Horizontal">
                                     <TextBlock Text="Model" VerticalAlignment="Center" Margin="0,0,8,0"
                                                Style="{StaticResource Text.SettingLabel}"/>
-                                    <ComboBox x:Name="DownloadWhisperModelCombo" Width="90" SelectedIndex="1">
+                                    <ComboBox x:Name="DownloadWhisperModelCombo" Width="90" SelectedIndex="2">
+                                        <ComboBoxItem Content="tiny.en"/>
                                         <ComboBoxItem Content="tiny"/>
                                         <ComboBoxItem Content="base"/>
                                         <ComboBoxItem Content="small"/>

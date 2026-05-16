@@ -23,7 +23,7 @@ public sealed class WhisperTranscriptionService : ITranscriptionService
     public WhisperTranscriptionService(string whisperModelsDir, string modelName)
     {
         _modelName = NormalizeModelName(modelName);
-        _modelPath = ModelPathFor(whisperModelsDir, _modelName);
+        _modelPath = ResolveExistingModelPath(whisperModelsDir, _modelName);
 
         try
         {
@@ -82,10 +82,14 @@ public sealed class WhisperTranscriptionService : ITranscriptionService
 
     public static string NormalizeModelName(string? modelName)
     {
-        return modelName?.Trim().ToLowerInvariant() switch
+        var normalized = modelName?.Trim().ToLowerInvariant().Replace('_', '.').Replace('-', '.');
+        return normalized switch
         {
+            "tiny.en" => "tiny.en",
             "tiny" => "tiny",
+            "base.en" => "base.en",
             "small" => "small",
+            "small.en" => "small.en",
             _ => "base",
         };
     }
@@ -93,11 +97,34 @@ public sealed class WhisperTranscriptionService : ITranscriptionService
     public static string ModelPathFor(string whisperModelsDir, string modelName)
         => Path.Combine(whisperModelsDir, $"ggml-{NormalizeModelName(modelName)}.bin");
 
+    public static string ResolveExistingModelPath(string whisperModelsDir, string modelName)
+    {
+        var normalized = NormalizeModelName(modelName);
+        var canonical = ModelPathFor(whisperModelsDir, normalized);
+        if (File.Exists(canonical))
+            return canonical;
+
+        // Older local installs sometimes have Whisper files directly under
+        // %APPDATA%\Handy\models\ instead of the newer models\whisper folder.
+        var parent = Directory.GetParent(whisperModelsDir)?.FullName;
+        if (!string.IsNullOrWhiteSpace(parent))
+        {
+            var legacy = Path.Combine(parent, $"ggml-{normalized}.bin");
+            if (File.Exists(legacy))
+                return legacy;
+        }
+
+        return canonical;
+    }
+
     public static GgmlType GgmlTypeFor(string modelName)
     {
         return NormalizeModelName(modelName) switch
         {
+            "tiny.en" => GgmlType.TinyEn,
             "tiny" => GgmlType.Tiny,
+            "base.en" => GgmlType.BaseEn,
+            "small.en" => GgmlType.SmallEn,
             "small" => GgmlType.Small,
             _ => GgmlType.Base,
         };

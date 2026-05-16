@@ -2,6 +2,8 @@ using System;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Interop;
 using System.Windows.Media;
@@ -37,6 +39,28 @@ public partial class App : Application
     // place to read what each stage did, so we emit one machine-parseable
     // summary alongside the existing per-stage log lines.
     private long _recStartTicks;
+
+    // Speculative recognition (DCT-015). Detect natural pauses, run a
+    // background ASR pass on the audio captured so far, and reuse the cached
+    // text on hotkey release if the user trailed off in silence.
+    //
+    // _asrGate serialises ALL ASR calls (Parakeet & Whisper sessions are
+    // non-reentrant) so a still-in-flight speculative pass blocks — not
+    // collides with — a cold final pass.
+    private readonly SemaphoreSlim _asrGate = new(1, 1);
+    private CancellationTokenSource? _specCts;
+    private long _lastNonSilentTicks;
+    private long _lastSpecSnapshotSamples;
+    private int _specInFlight;
+    private int _specStartedCount;
+    private int _specCompletedCount;
+    private SpeculativeResult? _specCache;
+
+    private sealed record SpeculativeResult(
+        string Text,
+        int SnapshotSamples,
+        int VadOutSamples,
+        long FinishedTicks);
 
     internal AppSettings Settings => _settings;
     internal ITranscriptionService? Asr => _asr;
@@ -93,6 +117,7 @@ public partial class App : Application
         _vad = new SileroVadService(Path.Combine(_dataDir, "models", "silero_vad.onnx"));
         _audio = new AudioCaptureService(_settings.MicrophoneDeviceName);
         _audio.OnLevels += levels => _overlay?.SetLevels(levels);
+        _audio.OnLevels += OnAudioLevelsForSpeculative;
         _audio.Initialize(); // start continuous capture for pre-roll
         _injector = new TextInjectionService();
         _feedback = new AudioFeedbackService(_settings);
@@ -150,12 +175,15 @@ public partial class App : Application
         try { _settings.Save(); } catch { /* best-effort */ }
         SingleInstance.OnSignal -= HandleSignal;
         SingleInstance.Shutdown();
+        try { _specCts?.Cancel(); } catch { }
+        try { _specCts?.Dispose(); } catch { }
         _hook?.Dispose();
         _audio?.Dispose();
         _asr?.Dispose();
         _vad?.Dispose();
         _feedback?.Dispose();
         _tray?.Dispose();
+        try { _asrGate.Dispose(); } catch { }
         Log.Shutdown();
     }
 
@@ -241,11 +269,114 @@ public partial class App : Application
         _recording = true;
         _cancelled = false;
         _recStartTicks = Stopwatch.GetTimestamp();
+        ResetSpeculativeState();
         _tray?.SetState(Services.TrayIconManager.State.Recording);
         ShowOverlay(RecordingOverlay.State.Recording);
         _feedback?.PlayStart();
         _audio!.Start(_settings.PreRollMs);
         Log.Info($"Recording started (pre-roll {_settings.PreRollMs} ms).");
+    }
+
+    private void ResetSpeculativeState()
+    {
+        try { _specCts?.Cancel(); } catch { }
+        try { _specCts?.Dispose(); } catch { }
+        _specCts = new CancellationTokenSource();
+        _lastNonSilentTicks = Stopwatch.GetTimestamp();
+        _lastSpecSnapshotSamples = 0;
+        Volatile.Write(ref _specInFlight, 0);
+        _specStartedCount = 0;
+        _specCompletedCount = 0;
+        _specCache = null;
+    }
+
+    // Pause-driven trigger for the speculative ASR pass. Fires off the
+    // capture thread (NAudio block callback ~50 ms), so the actual ASR work
+    // is dispatched to Task.Run and gated by _asrGate so it can't collide
+    // with the final pass.
+    private void OnAudioLevelsForSpeculative(float[] levels)
+    {
+        if (!_settings.BackgroundRecognitionEnabled) return;
+        if (!_recording) return;
+
+        var now = Stopwatch.GetTimestamp();
+        float maxBar = 0f;
+        for (int i = 0; i < levels.Length; i++) if (levels[i] > maxBar) maxBar = levels[i];
+
+        if (maxBar > _settings.BackgroundSilenceBarThreshold)
+        {
+            _lastNonSilentTicks = now;
+            return;
+        }
+
+        var pauseMs = (now - _lastNonSilentTicks) * 1000 / Stopwatch.Frequency;
+        if (pauseMs < _settings.BackgroundPauseTriggerMs) return;
+
+        if (Interlocked.CompareExchange(ref _specInFlight, 1, 0) != 0) return;
+        var cts = _specCts;
+        if (cts is null || cts.IsCancellationRequested) { Volatile.Write(ref _specInFlight, 0); return; }
+        var asr = _asr;
+        if (asr is null || !asr.IsReady) { Volatile.Write(ref _specInFlight, 0); return; }
+
+        // Hand off snapshot + ASR to a worker so we don't block the audio callback.
+        var token = cts.Token;
+        _ = Task.Run(() => RunSpeculativePass(asr, token), token);
+    }
+
+    private async Task RunSpeculativePass(ITranscriptionService asr, CancellationToken token)
+    {
+        try
+        {
+            if (_audio is null) return;
+            var snapshot = _audio.SnapshotCurrentRecording();
+            // Need at least minNewSpeechMs of additional audio since last snapshot
+            // to justify spending another ASR cycle.
+            var minNewSamples = _settings.BackgroundMinNewSpeechMs * 16;
+            if (snapshot.Length - _lastSpecSnapshotSamples < minNewSamples) return;
+            if (token.IsCancellationRequested) return;
+
+            _specStartedCount++;
+            _lastSpecSnapshotSamples = snapshot.Length;
+
+            float[] forAsr = snapshot;
+            if (_settings.VadEnabled && _vad is not null && _vad.IsReady)
+                forAsr = _vad.Trim(snapshot, _settings.VadThreshold, _settings.VadPaddingMs);
+
+            if (forAsr.Length < 16000 / 4) return; // sub-250 ms after VAD — skip
+
+            // _asrGate serialises against the final pass; an in-flight final
+            // pass will simply make this speculative pass wait then run, but
+            // by then the final pass has already used the prior cache (or
+            // not), so a late speculative pass just refreshes for the next
+            // dictation slot, which is harmless.
+            await _asrGate.WaitAsync(token).ConfigureAwait(false);
+            try
+            {
+                if (token.IsCancellationRequested) return;
+                var sw = Stopwatch.StartNew();
+                var raw = await asr.TranscribeAsync(forAsr, CreateTranscriptionOptions(_settings))
+                                   .ConfigureAwait(false);
+                sw.Stop();
+                if (token.IsCancellationRequested) return;
+                var text = PostProcessTranscript(raw ?? string.Empty, _settings);
+                _specCompletedCount++;
+                _specCache = new SpeculativeResult(text, snapshot.Length, forAsr.Length, Stopwatch.GetTimestamp());
+                Log.Info($"Spec: snapshotSamples={snapshot.Length} vadOutSamples={forAsr.Length} asrMs={sw.ElapsedMilliseconds} rawLen={(raw ?? string.Empty).Length} text=\"{text}\"");
+            }
+            finally
+            {
+                _asrGate.Release();
+            }
+        }
+        catch (OperationCanceledException) { /* expected on cancel */ }
+        catch (Exception ex)
+        {
+            Log.Warn($"Spec pass threw: {ex.Message}");
+        }
+        finally
+        {
+            Volatile.Write(ref _specInFlight, 0);
+        }
     }
 
     private async void StopAndTranscribe()
@@ -254,21 +385,32 @@ public partial class App : Application
         var startTicks = _recStartTicks;
         var sw = Stopwatch.StartNew();
 
+        var stopSw = Stopwatch.StartNew();
         var samples = await _audio!.StopAsync(_settings.PostRollMs);
+        stopSw.Stop();
+        var stopMs = stopSw.ElapsedMilliseconds;
         Log.Info($"Recording stopped. {samples.Length} samples captured (post-roll {_settings.PostRollMs} ms).");
 
         if (_cancelled)
         {
             SetUiState(isRecording: false, isTranscribing: false, hideOverlay: true);
             Log.Info("Recording cancelled; skipping transcription.");
-            EmitDiag(startTicks, samples.Length, samples.Length, samples.Length, 0, 0, 0, "-", false, "cancelled");
+            try { _specCts?.Cancel(); } catch { }
+            _specCache = null;
+            EmitDiag(startTicks, samples.Length, samples.Length, samples.Length, 0, 0, 0, "-", false, "cancelled",
+                     stopMs, 0, 0, 0, 0, 0, sw.ElapsedMilliseconds,
+                     _specStartedCount, _specCompletedCount, false, -1, 0);
             return;
         }
         if (samples.Length < 16000 / 4)
         {
             SetUiState(isRecording: false, isTranscribing: false, hideOverlay: true);
             Log.Warn("Recording too short; skipping.");
-            EmitDiag(startTicks, samples.Length, samples.Length, samples.Length, 0, 0, 0, "-", false, "tooShort");
+            try { _specCts?.Cancel(); } catch { }
+            _specCache = null;
+            EmitDiag(startTicks, samples.Length, samples.Length, samples.Length, 0, 0, 0, "-", false, "tooShort",
+                     stopMs, 0, 0, 0, 0, 0, sw.ElapsedMilliseconds,
+                     _specStartedCount, _specCompletedCount, false, -1, 0);
             return;
         }
 
@@ -277,41 +419,119 @@ public partial class App : Application
         _transcribing = true;
         int rawSampleCount = samples.Length;
         int vadOutCount = samples.Length;
+        var rawCaptureSamples = samples;
         long asrMs = 0;
         int rawLen = 0, filtLen = 0;
         bool pasteOk = false;
         string pasteMethod = _settings.PasteMethod ?? "Direct";
         string outcome = "ok";
+        long vadMs = 0;
+        long postMs = 0;
+        long historyMs = 0;
+        long pasteMs = 0;
+        long copyMs = 0;
+        bool specCached = false;
+        long specStaleMs = -1;
+        int specVadDelta = 0;
         try
         {
             if (_settings.VadEnabled && _vad is not null && _vad.IsReady)
             {
                 // Trim leading/trailing silence only — Smooth() was previously used here
                 // but it removes mid-clip silence, severing transcription context across pauses.
+                var vadSw = Stopwatch.StartNew();
                 samples = _vad.Trim(samples, _settings.VadThreshold, _settings.VadPaddingMs);
+                vadSw.Stop();
+                vadMs = vadSw.ElapsedMilliseconds;
                 vadOutCount = samples.Length;
             }
+
+            if (_settings.SaveLastAudioForDiagnostics)
+                SaveLastAudioDiagnostics(rawCaptureSamples, samples, _dataDir);
 
             var asr = _asr;
             if (asr is null || !asr.IsReady) throw new InvalidOperationException("Transcription model not loaded.");
 
-            var asrSw = Stopwatch.StartNew();
-            var raw = await asr.TranscribeAsync(samples, CreateTranscriptionOptions(_settings));
-            asrSw.Stop();
-            asrMs = asrSw.ElapsedMilliseconds;
-            rawLen = raw?.Length ?? 0;
-            Log.Info($"Raw: \"{raw}\"");
-            var text = PostProcessTranscript(raw ?? string.Empty, _settings);
+            // Speculative cache reuse: if the user trailed off in silence,
+            // the cached speculative result covers the same speech as the
+            // final buffer and we can skip the cold ASR pass entirely.
+            string? text = null;
+            string? raw = null;
+            var cache = _specCache;
+            if (cache is not null)
+            {
+                specStaleMs = (Stopwatch.GetTimestamp() - cache.FinishedTicks) * 1000 / Stopwatch.Frequency;
+                specVadDelta = samples.Length - cache.VadOutSamples;
+                if (SpeculativeCachePolicy.ShouldReuseCache(samples.Length, cache.VadOutSamples, specStaleMs, _settings))
+                {
+                    text = cache.Text;
+                    raw = cache.Text; // cached text is already post-processed; rawLen reflects that
+                    rawLen = raw.Length;
+                    asrMs = 0;
+                    specCached = true;
+                    Log.Info($"Spec cache HIT: text=\"{text}\" specStaleMs={specStaleMs} vadDelta={specVadDelta}");
+                }
+            }
+
+            if (text is null)
+            {
+                await _asrGate.WaitAsync().ConfigureAwait(false);
+                try
+                {
+                    // Re-check cache after the gate: an in-flight speculative
+                    // pass may have completed while we waited, and would now
+                    // satisfy the reuse rule we just failed.
+                    cache = _specCache;
+                    if (cache is not null)
+                    {
+                        var freshStaleMs = (Stopwatch.GetTimestamp() - cache.FinishedTicks) * 1000 / Stopwatch.Frequency;
+                        if (SpeculativeCachePolicy.ShouldReuseCache(samples.Length, cache.VadOutSamples, freshStaleMs, _settings))
+                        {
+                            text = cache.Text;
+                            raw = cache.Text;
+                            rawLen = raw.Length;
+                            asrMs = 0;
+                            specCached = true;
+                            specStaleMs = freshStaleMs;
+                            specVadDelta = samples.Length - cache.VadOutSamples;
+                            Log.Info($"Spec cache HIT (post-gate): text=\"{text}\" specStaleMs={specStaleMs} vadDelta={specVadDelta}");
+                        }
+                    }
+
+                    if (text is null)
+                    {
+                        var asrSw = Stopwatch.StartNew();
+                        raw = await asr.TranscribeAsync(samples, CreateTranscriptionOptions(_settings)).ConfigureAwait(false);
+                        asrSw.Stop();
+                        asrMs = asrSw.ElapsedMilliseconds;
+                        rawLen = raw?.Length ?? 0;
+                        Log.Info($"Raw: \"{raw}\"");
+                        text = PostProcessTranscript(raw ?? string.Empty, _settings);
+                    }
+                }
+                finally
+                {
+                    _asrGate.Release();
+                }
+            }
+
+            var postSw = Stopwatch.StartNew();
             filtLen = text.Length;
             if (_settings.AppendTrailingSpace && !string.IsNullOrEmpty(text))
                 text += ' ';
+            postSw.Stop();
+            postMs = postSw.ElapsedMilliseconds;
             Log.Info($"Transcript: {text}");
 
             if (!string.IsNullOrWhiteSpace(text))
             {
                 Log.Info("Flow: before history.Add");
+                var historySw = Stopwatch.StartNew();
                 _history?.Add(text);
+                historySw.Stop();
+                historyMs = historySw.ElapsedMilliseconds;
                 Log.Info("Flow: after history.Add, before paste");
+                var pasteSw = Stopwatch.StartNew();
                 try
                 {
                     _injector!.Paste(text, _settings);
@@ -322,7 +542,15 @@ public partial class App : Application
                     Log.Error($"Paste threw: {pex.Message}");
                     outcome = "pasteThrew";
                 }
+                finally
+                {
+                    pasteSw.Stop();
+                    pasteMs = pasteSw.ElapsedMilliseconds;
+                }
+                var copySw = Stopwatch.StartNew();
                 CopyTranscriptToClipboardIfEnabled(text);
+                copySw.Stop();
+                copyMs = copySw.ElapsedMilliseconds;
                 Log.Info("Flow: after paste");
             }
             else
@@ -340,17 +568,27 @@ public partial class App : Application
         {
             _transcribing = false;
             SetUiState(isRecording: false, isTranscribing: false, hideOverlay: true);
+            // Cancel any in-flight speculative work so it doesn't write to
+            // _specCache after this dictation ends and accidentally get reused
+            // on the next one with stale audio.
+            try { _specCts?.Cancel(); } catch { }
+            _specCache = null;
             EmitDiag(startTicks, rawSampleCount, vadOutCount, samples.Length,
-                     asrMs, rawLen, filtLen, pasteMethod, pasteOk, outcome);
+                     asrMs, rawLen, filtLen, pasteMethod, pasteOk, outcome,
+                     stopMs, vadMs, postMs, historyMs, pasteMs, copyMs, sw.ElapsedMilliseconds,
+                     _specStartedCount, _specCompletedCount, specCached, specStaleMs, specVadDelta);
         }
     }
 
     // One machine-greppable line per dictation. Pair with the existing per-stage
     // logs (Raw/Filter/Paste/Flow) when triaging "lost" dictations. Field order
-    // is stable so it can be parsed with a one-liner.
+    // is append-only so old parsers keep seeing the original fields first.
     private void EmitDiag(long recStartTicks, int rawSamples, int vadOutSamples, int finalSamples,
                           long asrMs, int rawLen, int filtLen,
-                          string pasteMethod, bool pasteOk, string outcome)
+                          string pasteMethod, bool pasteOk, string outcome,
+                          long stopMs, long vadMs, long postMs, long historyMs,
+                          long pasteMs, long copyMs, long totalMs,
+                          int specCount, int specOk, bool specCached, long specStaleMs, int specVadDelta)
     {
         long heldMs = 0;
         if (recStartTicks > 0)
@@ -361,8 +599,60 @@ public partial class App : Application
         Log.Info($"Diag: heldMs={heldMs} audioMs={audioMs} samples={rawSamples} " +
                  $"vadOutSamples={vadOutSamples} vadOutMs={vadOutMs} finalSamples={finalSamples} " +
                  $"asrMs={asrMs} rawLen={rawLen} filtLen={filtLen} " +
-                 $"paste={pasteMethod} pasteOk={(pasteOk ? "true" : "false")} outcome={outcome}");
+                 $"paste={pasteMethod} pasteOk={(pasteOk ? "true" : "false")} outcome={outcome} " +
+                 $"stopMs={stopMs} vadMs={vadMs} postMs={postMs} historyMs={historyMs} " +
+                 $"pasteMs={pasteMs} copyMs={copyMs} totalMs={totalMs} " +
+                 $"specCount={specCount} specOk={specOk} specCached={(specCached ? "true" : "false")} " +
+                 $"specStaleMs={specStaleMs} specVadDelta={specVadDelta}");
     }
+
+    private static void SaveLastAudioDiagnostics(float[] rawSamples, float[] asrSamples, string dataDir)
+    {
+        try
+        {
+            var dir = Path.Combine(dataDir, "diagnostics");
+            var rawPath = Path.Combine(dir, "last-capture.raw.wav");
+            var asrPath = Path.Combine(dir, "last-capture.asr.wav");
+            WavIo.WriteMonoFloat16k(rawPath, rawSamples);
+            WavIo.WriteMonoFloat16k(asrPath, asrSamples);
+            Log.Info($"Audio diag: saved raw=\"{rawPath}\" asr=\"{asrPath}\" " +
+                     $"raw[{DescribeAudioStats(rawSamples)}] asr[{DescribeAudioStats(asrSamples)}]");
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"Audio diag: save failed: {ex.Message}");
+        }
+    }
+
+    private static string DescribeAudioStats(float[] samples)
+    {
+        if (samples.Length == 0) return "samples=0";
+
+        double sumSq = 0;
+        double peak = 0;
+        int clipped = 0;
+        int nonFinite = 0;
+
+        foreach (var sample in samples)
+        {
+            if (!float.IsFinite(sample))
+            {
+                nonFinite++;
+                continue;
+            }
+            var abs = Math.Abs(sample);
+            if (abs > peak) peak = abs;
+            sumSq += sample * sample;
+            if (abs >= 0.98f) clipped++;
+        }
+
+        var valid = Math.Max(1, samples.Length - nonFinite);
+        var rms = Math.Sqrt(sumSq / valid);
+        return $"samples={samples.Length} rmsDb={Db(rms):F1} peakDb={Db(peak):F1} " +
+               $"clippedPct={(clipped * 100.0 / samples.Length):F2} nonFinite={nonFinite}";
+    }
+
+    private static double Db(double amplitude) => amplitude > 1e-9 ? 20.0 * Math.Log10(amplitude) : -120.0;
 
     // UI touches (tray NotifyIcon + WPF overlay) must happen on the dispatcher.
     // Continuations after awaits in StopAndTranscribe can land on the threadpool,
@@ -479,6 +769,7 @@ public partial class App : Application
         _activeBackend = backend;
         _activeWhisperModel = whisperModel;
         old?.Dispose();
+        _specCache = null; // any cache from the previous backend is no longer comparable
         _settingsWindow?.RefreshModelStatus();
         Log.Info($"Transcription backend switched to {_activeBackend} ({DescribeActiveModelPath(_settings, _dataDir, _parakeetModelDir)})");
     }
@@ -489,7 +780,7 @@ public partial class App : Application
         if (string.Equals(backend, "Whisper", StringComparison.OrdinalIgnoreCase))
         {
             var modelName = WhisperTranscriptionService.NormalizeModelName(_activeWhisperModel);
-            var path = WhisperTranscriptionService.ModelPathFor(ResolveWhisperModelsDir(_dataDir), modelName);
+            var path = WhisperTranscriptionService.ResolveExistingModelPath(ResolveWhisperModelsDir(_dataDir), modelName);
             return new ModelRuntimeStatus("Whisper", $"Whisper {modelName}", path, _asr?.IsReady == true);
         }
 
@@ -506,7 +797,7 @@ public partial class App : Application
         if (string.Equals(backend, "Whisper", StringComparison.OrdinalIgnoreCase))
         {
             var modelName = WhisperTranscriptionService.NormalizeModelName(whisperModel);
-            var path = WhisperTranscriptionService.ModelPathFor(ResolveWhisperModelsDir(_dataDir), modelName);
+            var path = WhisperTranscriptionService.ResolveExistingModelPath(ResolveWhisperModelsDir(_dataDir), modelName);
             return new ModelRuntimeStatus("Whisper", $"Whisper {modelName}", path, File.Exists(path));
         }
 
@@ -521,6 +812,7 @@ public partial class App : Application
     private static void RunTranscribeFile(string wavPath, string dataDir)
     {
         var outPath = Path.Combine(dataDir, "last-transcript.txt");
+        var totalSw = Stopwatch.StartNew();
         try
         {
             if (!File.Exists(wavPath))
@@ -532,24 +824,49 @@ public partial class App : Application
 
             var settings = AppSettings.Load(dataDir);
             var parakeetModelDir = ResolveModelDir(dataDir);
+            var backend = NormalizeBackend(settings.TranscriptionBackend);
+            var whisperModel = WhisperTranscriptionService.NormalizeModelName(settings.WhisperModel);
+            var loadSw = Stopwatch.StartNew();
             using var asr = CreateTranscriptionService(settings, dataDir, parakeetModelDir);
+            loadSw.Stop();
             if (!asr.IsReady)
             {
-                Log.Error($"--transcribe-file: {NormalizeBackend(settings.TranscriptionBackend)} model not loaded.");
+                Log.Error($"--transcribe-file: {backend} model not loaded.");
                 File.WriteAllText(outPath, "ERROR: models not loaded");
                 return;
             }
 
+            var wavSw = Stopwatch.StartNew();
             var samples = WavIo.ReadMonoFloat16k(wavPath);
+            wavSw.Stop();
+            var rawSamples = samples.Length;
             Log.Info($"--transcribe-file: loaded {samples.Length} samples from {wavPath}");
 
+            long vadMs = 0;
             using var vad = new SileroVadService(Path.Combine(dataDir, "models", "silero_vad.onnx"));
             if (vad.IsReady)
+            {
+                var vadSw = Stopwatch.StartNew();
                 samples = vad.Trim(samples);
+                vadSw.Stop();
+                vadMs = vadSw.ElapsedMilliseconds;
+            }
 
+            var asrSw = Stopwatch.StartNew();
             var raw = asr.TranscribeAsync(samples, CreateTranscriptionOptions(settings)).GetAwaiter().GetResult();
+            asrSw.Stop();
+            var postSw = Stopwatch.StartNew();
             var text = PostProcessTranscript(raw ?? string.Empty, settings);
+            postSw.Stop();
             Log.Info($"--transcribe-file: raw=\"{raw}\" postProcessed=\"{text}\"");
+            var benchModel = backend == "Whisper"
+                ? whisperModel
+                : DescribeParakeetModelName(parakeetModelDir).Replace(' ', '_');
+            Log.Info($"--transcribe-file: diag backend={backend} model={benchModel} " +
+                     $"audioMs={rawSamples * 1000 / 16000} samples={rawSamples} vadOutSamples={samples.Length} vadOutMs={samples.Length * 1000 / 16000} " +
+                     $"loadMs={loadSw.ElapsedMilliseconds} wavMs={wavSw.ElapsedMilliseconds} vadMs={vadMs} " +
+                     $"asrMs={asrSw.ElapsedMilliseconds} postMs={postSw.ElapsedMilliseconds} totalMs={totalSw.ElapsedMilliseconds} " +
+                     $"rawLen={(raw ?? string.Empty).Length} filtLen={text.Length}");
             File.WriteAllText(outPath, text);
         }
         catch (Exception ex)
@@ -679,7 +996,7 @@ public partial class App : Application
     {
         if (string.Equals(NormalizeBackend(settings.TranscriptionBackend), "Whisper", StringComparison.OrdinalIgnoreCase))
         {
-            return WhisperTranscriptionService.ModelPathFor(ResolveWhisperModelsDir(dataDir), settings.WhisperModel);
+            return WhisperTranscriptionService.ResolveExistingModelPath(ResolveWhisperModelsDir(dataDir), settings.WhisperModel);
         }
 
         return parakeetModelDir;

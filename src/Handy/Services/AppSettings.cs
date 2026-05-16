@@ -83,12 +83,40 @@ public sealed class AppSettings
     /// <summary>Extra audio captured AFTER the hotkey release, in case the speaker trails off.</summary>
     public int PostRollMs { get; set; } = 200;
 
+    /// <summary>When true, writes the last raw capture and post-VAD ASR input to
+    /// %APPDATA%\Handy\diagnostics for troubleshooting audio-path problems.</summary>
+    public bool SaveLastAudioForDiagnostics { get; set; } = false;
+
+    /// <summary>EXPERIMENTAL. While recording, detect natural pauses in speech and
+    /// kick off a speculative ASR pass on the audio captured so far. On hotkey
+    /// release, if the user trailed off in silence (VAD-trimmed length matches the
+    /// cached snapshot), reuse the cached transcript and skip the cold ASR pass.
+    /// Off by default; opt in by setting "backgroundRecognitionEnabled": true.</summary>
+    public bool BackgroundRecognitionEnabled { get; set; } = false;
+
+    /// <summary>Minimum silence duration (ms) before a speculative ASR pass is
+    /// triggered. Lower = more snapshots, more CPU; higher = miss short pauses.</summary>
+    public int BackgroundPauseTriggerMs { get; set; } = 600;
+
+    /// <summary>Minimum new audio captured (ms) since the last completed speculative
+    /// snapshot before another snapshot is allowed. Prevents back-to-back ASR runs
+    /// when the user pauses, resumes briefly, pauses again.</summary>
+    public int BackgroundMinNewSpeechMs { get; set; } = 1500;
+
+    /// <summary>Max age (ms) of a completed speculative snapshot for it to be
+    /// reusable on hotkey release. Older = cold ASR pass on final buffer.</summary>
+    public int BackgroundCacheMaxStaleMs { get; set; } = 500;
+
+    /// <summary>OnLevels max-bar value below which a 50 ms block is treated as
+    /// silence for pause detection. 0.15 ≈ −43 dBFS on the normalized bar curve.</summary>
+    public double BackgroundSilenceBarThreshold { get; set; } = 0.15;
+
     public int HistoryLimit { get; set; } = 50;
 
     /// <summary>Parakeet | Whisper. Parakeet remains the default for existing installs.</summary>
     public string TranscriptionBackend { get; set; } = "Parakeet";
 
-    /// <summary>tiny | base | small. Used only when TranscriptionBackend = Whisper.</summary>
+    /// <summary>tiny.en | tiny | base | base.en | small | small.en. Used only when TranscriptionBackend = Whisper.</summary>
     public string WhisperModel { get; set; } = "base";
 
     /// <summary>When using Whisper, seed the recognizer with canonical glossary terms.</summary>
