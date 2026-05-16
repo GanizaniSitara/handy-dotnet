@@ -123,8 +123,9 @@ foreach (var test in tests)
 AssertDisabledRulePersists();
 AssertWhisperVocabularyPromptBuilder();
 AssertSpeculativeCachePolicy();
+AssertTranscriptSplicer();
 
-Console.WriteLine($"Domain correction fixture passed ({tests.Length} correction cases plus settings and prompt-builder checks).");
+Console.WriteLine($"Domain correction fixture passed ({tests.Length} correction cases plus settings, prompt-builder, speculative, and splicer checks).");
 
 static DomainCorrection Rule(
     string from,
@@ -222,43 +223,57 @@ static void AssertWhisperVocabularyPromptBuilder()
 
 static void AssertSpeculativeCachePolicy()
 {
-    var s = new AppSettings
-    {
-        BackgroundRecognitionEnabled = true,
-        BackgroundMinNewSpeechMs = 1500,
-        BackgroundCacheMaxStaleMs = 500,
-    };
+    var s = new AppSettings { BackgroundRecognitionEnabled = true };
 
-    // Identical lengths, fresh cache -> hit.
-    AssertEqual(true,
-        SpeculativeCachePolicy.ShouldReuseCache(finalVadSampleCount: 96_000, cacheVadSampleCount: 96_000, cacheAgeMs: 100, s),
-        "spec policy: identical lengths + fresh -> hit");
+    // Tail is silence (VAD trimmed everything after the snapshot) -> use prefix only.
+    AssertEqual(SpeculativeCachePolicy.Decision.UsePrefixOnly,
+        SpeculativeCachePolicy.Decide(finalRawSampleCount: 96_000, snapshotRawSampleCount: 80_000, tailVadSampleCount: 0, s),
+        "spec policy: tail-silent -> prefix only");
 
-    // Tail of silence trimmed by VAD: final slightly shorter than cache -> hit (delta within 1.5 s).
-    AssertEqual(true,
-        SpeculativeCachePolicy.ShouldReuseCache(finalVadSampleCount: 80_000, cacheVadSampleCount: 96_000, cacheAgeMs: 100, s),
-        "spec policy: final shorter within tolerance -> hit");
+    // Final equals snapshot (rare: snapshot caught the whole thing) -> prefix only.
+    AssertEqual(SpeculativeCachePolicy.Decision.UsePrefixOnly,
+        SpeculativeCachePolicy.Decide(finalRawSampleCount: 96_000, snapshotRawSampleCount: 96_000, tailVadSampleCount: 0, s),
+        "spec policy: final == snapshot -> prefix only");
 
-    // User kept talking: final much longer than cache -> miss.
-    AssertEqual(false,
-        SpeculativeCachePolicy.ShouldReuseCache(finalVadSampleCount: 160_000, cacheVadSampleCount: 96_000, cacheAgeMs: 100, s),
-        "spec policy: final longer than tolerance -> miss");
+    // Final has 2 s of new speech beyond the snapshot, with voiced VAD output -> decode tail.
+    AssertEqual(SpeculativeCachePolicy.Decision.UsePrefixPlusTail,
+        SpeculativeCachePolicy.Decide(finalRawSampleCount: 128_000, snapshotRawSampleCount: 96_000, tailVadSampleCount: 32_000, s),
+        "spec policy: voiced tail -> prefix + tail");
 
-    // Stale cache -> miss.
-    AssertEqual(false,
-        SpeculativeCachePolicy.ShouldReuseCache(finalVadSampleCount: 96_000, cacheVadSampleCount: 96_000, cacheAgeMs: 600, s),
-        "spec policy: stale cache -> miss");
+    // Tail raw is long but VAD trimmed to <250 ms of speech -> prefix only.
+    AssertEqual(SpeculativeCachePolicy.Decision.UsePrefixOnly,
+        SpeculativeCachePolicy.Decide(finalRawSampleCount: 128_000, snapshotRawSampleCount: 96_000, tailVadSampleCount: 1_000, s),
+        "spec policy: tail too short after VAD -> prefix only");
 
-    // Feature disabled -> miss regardless.
+    // No snapshot at all -> cold pass.
+    AssertEqual(SpeculativeCachePolicy.Decision.ColdPass,
+        SpeculativeCachePolicy.Decide(finalRawSampleCount: 96_000, snapshotRawSampleCount: 0, tailVadSampleCount: 0, s),
+        "spec policy: no snapshot -> cold pass");
+
+    // Feature disabled -> cold pass regardless.
     var off = new AppSettings { BackgroundRecognitionEnabled = false };
-    AssertEqual(false,
-        SpeculativeCachePolicy.ShouldReuseCache(finalVadSampleCount: 96_000, cacheVadSampleCount: 96_000, cacheAgeMs: 50, off),
-        "spec policy: feature flag off -> miss");
+    AssertEqual(SpeculativeCachePolicy.Decision.ColdPass,
+        SpeculativeCachePolicy.Decide(finalRawSampleCount: 96_000, snapshotRawSampleCount: 80_000, tailVadSampleCount: 0, off),
+        "spec policy: feature flag off -> cold pass");
+}
 
-    // Empty cache -> miss.
-    AssertEqual(false,
-        SpeculativeCachePolicy.ShouldReuseCache(finalVadSampleCount: 96_000, cacheVadSampleCount: 0, cacheAgeMs: 50, s),
-        "spec policy: empty cache -> miss");
+static void AssertTranscriptSplicer()
+{
+    AssertEqual("hello world",
+        TranscriptSplicer.Combine("hello ", " world"),
+        "splicer: normalizes boundary spacing");
+
+    AssertEqual("tail only",
+        TranscriptSplicer.Combine(" ", " tail only "),
+        "splicer: blank prefix");
+
+    var combined = TranscriptSplicer.Combine("Please open service", "now ticket.");
+    AssertEqual("Please open service now ticket.", combined, "splicer: boundary phrase preserved");
+
+    var corrected = DomainCorrectionService.Apply(
+        combined,
+        new[] { Rule("service now", "ServiceNow") });
+    AssertEqual("Please open ServiceNow ticket.", corrected.Text, "splicer: corrections see boundary phrase");
 }
 
 internal sealed record TestCase(

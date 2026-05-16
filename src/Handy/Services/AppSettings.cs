@@ -89,8 +89,8 @@ public sealed class AppSettings
 
     /// <summary>EXPERIMENTAL. While recording, detect natural pauses in speech and
     /// kick off a speculative ASR pass on the audio captured so far. On hotkey
-    /// release, if the user trailed off in silence (VAD-trimmed length matches the
-    /// cached snapshot), reuse the cached transcript and skip the cold ASR pass.
+    /// release, reuse that pass as the prefix and only decode the audio tail
+    /// captured after the snapshot. If the tail is silence, skip final ASR.
     /// Off by default; opt in by setting "backgroundRecognitionEnabled": true.</summary>
     public bool BackgroundRecognitionEnabled { get; set; } = false;
 
@@ -102,10 +102,6 @@ public sealed class AppSettings
     /// snapshot before another snapshot is allowed. Prevents back-to-back ASR runs
     /// when the user pauses, resumes briefly, pauses again.</summary>
     public int BackgroundMinNewSpeechMs { get; set; } = 1500;
-
-    /// <summary>Max age (ms) of a completed speculative snapshot for it to be
-    /// reusable on hotkey release. Older = cold ASR pass on final buffer.</summary>
-    public int BackgroundCacheMaxStaleMs { get; set; } = 500;
 
     /// <summary>OnLevels max-bar value below which a 50 ms block is treated as
     /// silence for pause detection. 0.15 ≈ −43 dBFS on the normalized bar curve.</summary>

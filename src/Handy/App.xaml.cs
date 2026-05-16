@@ -40,9 +40,9 @@ public partial class App : Application
     // summary alongside the existing per-stage log lines.
     private long _recStartTicks;
 
-    // Speculative recognition (DCT-015). Detect natural pauses, run a
-    // background ASR pass on the audio captured so far, and reuse the cached
-    // text on hotkey release if the user trailed off in silence.
+    // Speculative recognition. Detect natural pauses, run a background ASR
+    // pass on the audio captured so far, then either use that pass as the
+    // final prefix or decode only the tail captured after the snapshot.
     //
     // _asrGate serialises ALL ASR calls (Parakeet & Whisper sessions are
     // non-reentrant) so a still-in-flight speculative pass blocks — not
@@ -57,6 +57,7 @@ public partial class App : Application
     private SpeculativeResult? _specCache;
 
     private sealed record SpeculativeResult(
+        string RawText,
         string Text,
         int SnapshotSamples,
         int VadOutSamples,
@@ -81,9 +82,10 @@ public partial class App : Application
         Directory.CreateDirectory(_dataDir);
         Log.Init(Path.Combine(_dataDir, "handy.log"));
 
-        // --transcribe-file is a one-shot; skip the single-instance gate so it
-        // doesn't conflict with a running tray instance.
-        var isOneShot = Array.IndexOf(e.Args, "--transcribe-file") >= 0;
+        // One-shot CLI modes skip the single-instance gate so they don't
+        // conflict with a running tray instance.
+        var isOneShot = Array.IndexOf(e.Args, "--transcribe-file") >= 0
+                     || Array.IndexOf(e.Args, "--bench-additive") >= 0;
         if (!isOneShot && !SingleInstance.AcquireOrForward(e.Args))
         {
             Log.Info("Another Handy instance is already running; forwarded CLI and exiting.");
@@ -102,6 +104,24 @@ public partial class App : Application
         if (fileIndex >= 0 && fileIndex + 1 < e.Args.Length)
         {
             RunTranscribeFile(e.Args[fileIndex + 1], _dataDir);
+            Shutdown();
+            return;
+        }
+
+        // --bench-additive <wav> [--split <fraction>]: split the WAV at the
+        // configured fraction (default 0.7), time a cold full pass vs prefix
+        // + tail passes, splice the additive output, and print a comparison.
+        // Mirrors the runtime path: prefix happens during recording, tail
+        // happens on hotkey release — so the "perceived" release wait is the
+        // tail pass alone.
+        var benchIndex = Array.IndexOf(e.Args, "--bench-additive");
+        if (benchIndex >= 0 && benchIndex + 1 < e.Args.Length)
+        {
+            var splitArg = ArgumentValue(e.Args, "--split");
+            double splitFraction = 0.7;
+            if (splitArg is not null && double.TryParse(splitArg, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var parsed))
+                splitFraction = Math.Clamp(parsed, 0.1, 0.95);
+            RunBenchAdditive(e.Args[benchIndex + 1], splitFraction, _dataDir);
             Shutdown();
             return;
         }
@@ -358,10 +378,11 @@ public partial class App : Application
                                    .ConfigureAwait(false);
                 sw.Stop();
                 if (token.IsCancellationRequested) return;
-                var text = PostProcessTranscript(raw ?? string.Empty, _settings);
+                var rawText = raw ?? string.Empty;
+                var text = PostProcessTranscript(rawText, _settings);
                 _specCompletedCount++;
-                _specCache = new SpeculativeResult(text, snapshot.Length, forAsr.Length, Stopwatch.GetTimestamp());
-                Log.Info($"Spec: snapshotSamples={snapshot.Length} vadOutSamples={forAsr.Length} asrMs={sw.ElapsedMilliseconds} rawLen={(raw ?? string.Empty).Length} text=\"{text}\"");
+                _specCache = new SpeculativeResult(rawText, text, snapshot.Length, forAsr.Length, Stopwatch.GetTimestamp());
+                Log.Info($"Spec: snapshotSamples={snapshot.Length} vadOutSamples={forAsr.Length} asrMs={sw.ElapsedMilliseconds} rawLen={rawText.Length} text=\"{text}\"");
             }
             finally
             {
@@ -399,7 +420,7 @@ public partial class App : Application
             _specCache = null;
             EmitDiag(startTicks, samples.Length, samples.Length, samples.Length, 0, 0, 0, "-", false, "cancelled",
                      stopMs, 0, 0, 0, 0, 0, sw.ElapsedMilliseconds,
-                     _specStartedCount, _specCompletedCount, false, -1, 0);
+                     _specStartedCount, _specCompletedCount, false, -1, 0, 0);
             return;
         }
         if (samples.Length < 16000 / 4)
@@ -410,7 +431,7 @@ public partial class App : Application
             _specCache = null;
             EmitDiag(startTicks, samples.Length, samples.Length, samples.Length, 0, 0, 0, "-", false, "tooShort",
                      stopMs, 0, 0, 0, 0, 0, sw.ElapsedMilliseconds,
-                     _specStartedCount, _specCompletedCount, false, -1, 0);
+                     _specStartedCount, _specCompletedCount, false, -1, 0, 0);
             return;
         }
 
@@ -430,9 +451,10 @@ public partial class App : Application
         long historyMs = 0;
         long pasteMs = 0;
         long copyMs = 0;
-        bool specCached = false;
+        bool specPrefixUsed = false;
         long specStaleMs = -1;
-        int specVadDelta = 0;
+        int specTailMs = 0;
+        long specTailAsrMs = 0;
         try
         {
             if (_settings.VadEnabled && _vad is not null && _vad.IsReady)
@@ -452,53 +474,97 @@ public partial class App : Application
             var asr = _asr;
             if (asr is null || !asr.IsReady) throw new InvalidOperationException("Transcription model not loaded.");
 
-            // Speculative cache reuse: if the user trailed off in silence,
-            // the cached speculative result covers the same speech as the
-            // final buffer and we can skip the cold ASR pass entirely.
+            // Additive prepass reuse: the prepass produced a transcript of a
+            // snapshot of the recording at the moment of a pause. We keep
+            // that as a *prefix* and only run ASR on the tail of audio
+            // captured since the snapshot, then splice. If the tail is
+            // silence (user trailed off), we skip ASR entirely and use the
+            // prefix verbatim. If there's no usable prepass, run the full
+            // cold pass on the final buffer as before.
             string? text = null;
             string? raw = null;
-            var cache = _specCache;
-            if (cache is not null)
+            int snapRawSamples = 0, tailRawSamples = 0, tailVadSamples = 0;
+
+            void RecomputeTailMetrics(SpeculativeResult? c)
             {
-                specStaleMs = (Stopwatch.GetTimestamp() - cache.FinishedTicks) * 1000 / Stopwatch.Frequency;
-                specVadDelta = samples.Length - cache.VadOutSamples;
-                if (SpeculativeCachePolicy.ShouldReuseCache(samples.Length, cache.VadOutSamples, specStaleMs, _settings))
+                snapRawSamples = c?.SnapshotSamples ?? 0;
+                tailRawSamples = c is null ? 0 : Math.Max(0, rawCaptureSamples.Length - snapRawSamples);
+                if (tailRawSamples == 0) { tailVadSamples = 0; return; }
+                if (_settings.VadEnabled && _vad is not null && _vad.IsReady)
                 {
-                    text = cache.Text;
-                    raw = cache.Text; // cached text is already post-processed; rawLen reflects that
-                    rawLen = raw.Length;
-                    asrMs = 0;
-                    specCached = true;
-                    Log.Info($"Spec cache HIT: text=\"{text}\" specStaleMs={specStaleMs} vadDelta={specVadDelta}");
+                    var t = new float[tailRawSamples];
+                    Array.Copy(rawCaptureSamples, snapRawSamples, t, 0, tailRawSamples);
+                    tailVadSamples = _vad.Trim(t, _settings.VadThreshold, _settings.VadPaddingMs).Length;
                 }
+                else { tailVadSamples = tailRawSamples; }
             }
 
-            if (text is null)
+            var cache = _specCache;
+            RecomputeTailMetrics(cache);
+            var decision = SpeculativeCachePolicy.Decide(rawCaptureSamples.Length, snapRawSamples, tailVadSamples, _settings);
+            specTailMs = tailRawSamples * 1000 / 16000;
+
+            if (decision == SpeculativeCachePolicy.Decision.UsePrefixOnly && cache is not null)
             {
+                raw = cache.RawText;
+                rawLen = raw.Length;
+                Log.Info($"Raw: \"{raw}\" (spec prefix-only)");
+                text = PostProcessTranscript(raw, _settings);
+                asrMs = 0;
+                specPrefixUsed = true;
+                specStaleMs = (Stopwatch.GetTimestamp() - cache.FinishedTicks) * 1000 / Stopwatch.Frequency;
+                Log.Info($"Spec prefix-only: text=\"{text}\" tailRawMs={specTailMs} tailVadSamples={tailVadSamples}");
+            }
+            else
+            {
+                // Either cold pass or prefix+tail — both need _asrGate so we
+                // don't collide with an in-flight prepass on the same ASR.
                 await _asrGate.WaitAsync().ConfigureAwait(false);
                 try
                 {
-                    // Re-check cache after the gate: an in-flight speculative
-                    // pass may have completed while we waited, and would now
-                    // satisfy the reuse rule we just failed.
+                    // Re-evaluate the cache: a prepass may have landed while
+                    // we were waiting on the gate.
                     cache = _specCache;
-                    if (cache is not null)
-                    {
-                        var freshStaleMs = (Stopwatch.GetTimestamp() - cache.FinishedTicks) * 1000 / Stopwatch.Frequency;
-                        if (SpeculativeCachePolicy.ShouldReuseCache(samples.Length, cache.VadOutSamples, freshStaleMs, _settings))
-                        {
-                            text = cache.Text;
-                            raw = cache.Text;
-                            rawLen = raw.Length;
-                            asrMs = 0;
-                            specCached = true;
-                            specStaleMs = freshStaleMs;
-                            specVadDelta = samples.Length - cache.VadOutSamples;
-                            Log.Info($"Spec cache HIT (post-gate): text=\"{text}\" specStaleMs={specStaleMs} vadDelta={specVadDelta}");
-                        }
-                    }
+                    RecomputeTailMetrics(cache);
+                    decision = SpeculativeCachePolicy.Decide(rawCaptureSamples.Length, snapRawSamples, tailVadSamples, _settings);
+                    specTailMs = tailRawSamples * 1000 / 16000;
 
-                    if (text is null)
+                    if (decision == SpeculativeCachePolicy.Decision.UsePrefixOnly && cache is not null)
+                    {
+                        raw = cache.RawText;
+                        rawLen = raw.Length;
+                        Log.Info($"Raw: \"{raw}\" (spec prefix-only)");
+                        text = PostProcessTranscript(raw, _settings);
+                        asrMs = 0;
+                        specPrefixUsed = true;
+                        specStaleMs = (Stopwatch.GetTimestamp() - cache.FinishedTicks) * 1000 / Stopwatch.Frequency;
+                        Log.Info($"Spec prefix-only (post-gate): text=\"{text}\"");
+                    }
+                    else if (decision == SpeculativeCachePolicy.Decision.UsePrefixPlusTail && cache is not null)
+                    {
+                        // Decode just the tail (raw audio after the snapshot point).
+                        var tailRaw = new float[tailRawSamples];
+                        Array.Copy(rawCaptureSamples, snapRawSamples, tailRaw, 0, tailRawSamples);
+                        var tailForAsr = tailRaw;
+                        if (_settings.VadEnabled && _vad is not null && _vad.IsReady)
+                            tailForAsr = _vad.Trim(tailRaw, _settings.VadThreshold, _settings.VadPaddingMs);
+
+                        var asrSw = Stopwatch.StartNew();
+                        var tailRawText = await asr.TranscribeAsync(tailForAsr, CreateTranscriptionOptions(_settings)).ConfigureAwait(false);
+                        asrSw.Stop();
+                        specTailAsrMs = asrSw.ElapsedMilliseconds;
+                        asrMs = specTailAsrMs;
+                        var tailRawString = tailRawText ?? string.Empty;
+                        raw = TranscriptSplicer.Combine(cache.RawText, tailRawString);
+                        rawLen = raw.Length;
+                        Log.Info($"Raw: \"{raw}\" (spec prefix+tail)");
+
+                        text = PostProcessTranscript(raw, _settings);
+                        specPrefixUsed = true;
+                        specStaleMs = (Stopwatch.GetTimestamp() - cache.FinishedTicks) * 1000 / Stopwatch.Frequency;
+                        Log.Info($"Spec prefix+tail: prefixRawLen={cache.RawText.Length} tailRawLen={tailRawString.Length} tailAudioMs={specTailMs} tailAsrMs={specTailAsrMs} text=\"{text}\"");
+                    }
+                    else
                     {
                         var asrSw = Stopwatch.StartNew();
                         raw = await asr.TranscribeAsync(samples, CreateTranscriptionOptions(_settings)).ConfigureAwait(false);
@@ -576,7 +642,7 @@ public partial class App : Application
             EmitDiag(startTicks, rawSampleCount, vadOutCount, samples.Length,
                      asrMs, rawLen, filtLen, pasteMethod, pasteOk, outcome,
                      stopMs, vadMs, postMs, historyMs, pasteMs, copyMs, sw.ElapsedMilliseconds,
-                     _specStartedCount, _specCompletedCount, specCached, specStaleMs, specVadDelta);
+                     _specStartedCount, _specCompletedCount, specPrefixUsed, specStaleMs, specTailMs, specTailAsrMs);
         }
     }
 
@@ -588,7 +654,8 @@ public partial class App : Application
                           string pasteMethod, bool pasteOk, string outcome,
                           long stopMs, long vadMs, long postMs, long historyMs,
                           long pasteMs, long copyMs, long totalMs,
-                          int specCount, int specOk, bool specCached, long specStaleMs, int specVadDelta)
+                          int specCount, int specOk, bool specPrefix, long specStaleMs,
+                          int specTailMs, long specTailAsrMs)
     {
         long heldMs = 0;
         if (recStartTicks > 0)
@@ -602,8 +669,8 @@ public partial class App : Application
                  $"paste={pasteMethod} pasteOk={(pasteOk ? "true" : "false")} outcome={outcome} " +
                  $"stopMs={stopMs} vadMs={vadMs} postMs={postMs} historyMs={historyMs} " +
                  $"pasteMs={pasteMs} copyMs={copyMs} totalMs={totalMs} " +
-                 $"specCount={specCount} specOk={specOk} specCached={(specCached ? "true" : "false")} " +
-                 $"specStaleMs={specStaleMs} specVadDelta={specVadDelta}");
+                 $"specCount={specCount} specOk={specOk} specPrefix={(specPrefix ? "true" : "false")} " +
+                 $"specStaleMs={specStaleMs} specTailMs={specTailMs} specTailAsrMs={specTailAsrMs}");
     }
 
     private static void SaveLastAudioDiagnostics(float[] rawSamples, float[] asrSamples, string dataDir)
@@ -807,6 +874,193 @@ public partial class App : Application
             DescribeParakeetModelName(parakeetModelDir),
             parakeetModelDir,
             HasParakeetAssets(parakeetModelDir));
+    }
+
+    // Find the silence run nearest to <paramref name="targetSample"/> within
+    // a search window, return the sample at its midpoint. -1 if no silence
+    // run of at least <paramref name="pauseMinMs"/> is found in the window.
+    // Silence is detected via RMS-per-50ms-frame: cheap and good enough for
+    // bench split alignment, no need to crack open Silero per-frame.
+    private static int FindSilenceAlignedSplit(float[] samples, int targetSample, int pauseMinMs, int searchWindowMs)
+    {
+        const int SampleRate = 16000;
+        const int FrameSamples = 800;          // 50 ms at 16 kHz — matches OnLevels block size
+        const float SilenceRmsThreshold = 0.02f; // ~-34 dBFS — quiet but not absolute silence
+
+        var searchStart = Math.Max(FrameSamples, targetSample - searchWindowMs * SampleRate / 1000);
+        var searchEnd = Math.Min(samples.Length - FrameSamples, targetSample + searchWindowMs * SampleRate / 1000);
+        if (searchEnd <= searchStart) return -1;
+
+        var frames = (searchEnd - searchStart) / FrameSamples;
+        var silent = new bool[frames];
+        for (int f = 0; f < frames; f++)
+        {
+            double sumSq = 0;
+            var start = searchStart + f * FrameSamples;
+            for (int i = 0; i < FrameSamples; i++)
+            {
+                var v = samples[start + i];
+                sumSq += v * v;
+            }
+            var rms = Math.Sqrt(sumSq / FrameSamples);
+            silent[f] = rms < SilenceRmsThreshold;
+        }
+
+        var minPauseFrames = Math.Max(1, pauseMinMs / 50);
+        var targetFrame = (targetSample - searchStart) / FrameSamples;
+        int bestRunMid = -1;
+        int bestDist = int.MaxValue;
+        int runStart = -1;
+        for (int f = 0; f < frames; f++)
+        {
+            if (silent[f])
+            {
+                if (runStart < 0) runStart = f;
+                continue;
+            }
+            if (runStart >= 0)
+            {
+                var runLen = f - runStart;
+                if (runLen >= minPauseFrames)
+                {
+                    var mid = runStart + runLen / 2;
+                    var dist = Math.Abs(mid - targetFrame);
+                    if (dist < bestDist) { bestDist = dist; bestRunMid = mid; }
+                }
+                runStart = -1;
+            }
+        }
+        if (runStart >= 0)
+        {
+            var runLen = frames - runStart;
+            if (runLen >= minPauseFrames)
+            {
+                var mid = runStart + runLen / 2;
+                var dist = Math.Abs(mid - targetFrame);
+                if (dist < bestDist) { bestDist = dist; bestRunMid = mid; }
+            }
+        }
+
+        if (bestRunMid < 0) return -1;
+        return searchStart + bestRunMid * FrameSamples;
+    }
+
+    // A/B bench of the additive prepass+tail design vs the cold full pass.
+    // Loads the WAV, splits at `splitFraction`, transcribes each piece
+    // independently, splices, and prints timings + text diff. The numbers
+    // model the runtime: the prefix pass happens during recording (invisible
+    // to the user), the tail pass happens after hotkey release (what the
+    // user perceives as wait).
+    private static void RunBenchAdditive(string wavPath, double splitFraction, string dataDir)
+    {
+        var outPath = Path.Combine(dataDir, "last-bench-additive.txt");
+        try
+        {
+            if (!File.Exists(wavPath))
+            {
+                Log.Error($"--bench-additive: WAV not found: {wavPath}");
+                File.WriteAllText(outPath, $"ERROR: wav not found: {wavPath}");
+                return;
+            }
+
+            var settings = AppSettings.Load(dataDir);
+            var parakeetModelDir = ResolveModelDir(dataDir);
+            var backend = NormalizeBackend(settings.TranscriptionBackend);
+            using var asr = CreateTranscriptionService(settings, dataDir, parakeetModelDir);
+            if (!asr.IsReady)
+            {
+                Log.Error($"--bench-additive: {backend} model not loaded.");
+                File.WriteAllText(outPath, "ERROR: models not loaded");
+                return;
+            }
+
+            using var vad = new SileroVadService(Path.Combine(dataDir, "models", "silero_vad.onnx"));
+            var samples = WavIo.ReadMonoFloat16k(wavPath);
+            var totalMs = samples.Length * 1000 / 16000;
+
+            // Find a natural silence near the configured fraction and split
+            // in the middle of it. This mirrors the live path: the spec pass
+            // fires on a VAD-detected pause, so the snapshot boundary lands
+            // in silence and the splice is between two complete voiced runs.
+            // Splitting at a literal fraction can cut mid-word and produce
+            // boundary artifacts that the live design doesn't actually hit.
+            var targetSplit = (int)(samples.Length * splitFraction);
+            var alignedSplit = FindSilenceAlignedSplit(samples, targetSplit,
+                pauseMinMs: settings.BackgroundPauseTriggerMs,
+                searchWindowMs: 2500);
+            int splitSample = alignedSplit > 0 ? alignedSplit : targetSplit;
+            bool silenceAligned = alignedSplit > 0;
+            int targetSplitMs = targetSplit * 1000 / 16000;
+            var splitMs = splitSample * 1000 / 16000;
+            var prefix = new float[splitSample];
+            Array.Copy(samples, 0, prefix, 0, splitSample);
+            var tail = new float[samples.Length - splitSample];
+            Array.Copy(samples, splitSample, tail, 0, tail.Length);
+
+            // Apply VAD trim identically to the live path.
+            float[] Trim(float[] x) => (settings.VadEnabled && vad.IsReady)
+                ? vad.Trim(x, settings.VadThreshold, settings.VadPaddingMs)
+                : x;
+
+            var options = CreateTranscriptionOptions(settings);
+
+            // Warm-up to absorb JIT / model first-touch costs so subsequent
+            // timings reflect steady-state inference.
+            asr.TranscribeAsync(Trim(prefix), options).GetAwaiter().GetResult();
+
+            // Cold full pass.
+            var fullSw = Stopwatch.StartNew();
+            var fullRaw = asr.TranscribeAsync(Trim(samples), options).GetAwaiter().GetResult();
+            fullSw.Stop();
+            var fullText = PostProcessTranscript(fullRaw ?? string.Empty, settings);
+
+            // Prefix pass (this is the speculative work that runs during recording).
+            var prefixSw = Stopwatch.StartNew();
+            var prefixRaw = asr.TranscribeAsync(Trim(prefix), options).GetAwaiter().GetResult();
+            prefixSw.Stop();
+            var prefixText = PostProcessTranscript(prefixRaw ?? string.Empty, settings);
+
+            // Tail pass (this is the post-release work the user perceives as wait).
+            var tailSw = Stopwatch.StartNew();
+            var tailRaw = asr.TranscribeAsync(Trim(tail), options).GetAwaiter().GetResult();
+            tailSw.Stop();
+            var tailText = PostProcessTranscript(tailRaw ?? string.Empty, settings);
+
+            var splicedRaw = TranscriptSplicer.Combine(prefixRaw ?? string.Empty, tailRaw ?? string.Empty);
+            var spliced = PostProcessTranscript(splicedRaw, settings);
+
+            var report = new System.Text.StringBuilder();
+            report.AppendLine($"# bench-additive: {wavPath}");
+            report.AppendLine($"backend={backend} model={(backend == "Whisper" ? settings.WhisperModel : DescribeParakeetModelName(parakeetModelDir))}");
+            report.AppendLine($"audio totalMs={totalMs} targetSplitMs={targetSplitMs} ({splitFraction:F2}) actualSplitMs={splitMs} tailMs={totalMs - splitMs} silenceAligned={(silenceAligned ? "yes" : "no — no pause found near target")}");
+            report.AppendLine($"-- timings --");
+            report.AppendLine($"cold full pass : {fullSw.ElapsedMilliseconds} ms");
+            report.AppendLine($"prefix pass    : {prefixSw.ElapsedMilliseconds} ms   (runs in background during recording — invisible to user)");
+            report.AppendLine($"tail pass      : {tailSw.ElapsedMilliseconds} ms   (runs after hotkey release — perceived wait)");
+            report.AppendLine($"-- comparison (user-perceived wait at hotkey release) --");
+            report.AppendLine($"old design     : {fullSw.ElapsedMilliseconds} ms");
+            report.AppendLine($"new design     : {tailSw.ElapsedMilliseconds} ms");
+            var saved = fullSw.ElapsedMilliseconds - tailSw.ElapsedMilliseconds;
+            var pct = fullSw.ElapsedMilliseconds > 0 ? (100.0 * saved / fullSw.ElapsedMilliseconds) : 0;
+            report.AppendLine($"saved          : {saved} ms ({pct:F1}%)");
+            report.AppendLine($"-- text --");
+            report.AppendLine($"cold full text : {fullText}");
+            report.AppendLine($"prefix text    : {prefixText}");
+            report.AppendLine($"tail text      : {tailText}");
+            report.AppendLine($"spliced raw    : {splicedRaw}");
+            report.AppendLine($"spliced text   : {spliced}");
+            report.AppendLine($"identical?     : {(string.Equals(fullText.Trim(), spliced.Trim(), StringComparison.Ordinal) ? "yes" : "no — splice differs from cold output")}");
+
+            var text = report.ToString();
+            File.WriteAllText(outPath, text);
+            Console.WriteLine(text);
+            Log.Info($"--bench-additive: wrote {outPath}");
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"--bench-additive failed: {ex}");
+            try { File.WriteAllText(outPath, "ERROR: " + ex.Message); } catch { }
+        }
     }
 
     private static void RunTranscribeFile(string wavPath, string dataDir)
