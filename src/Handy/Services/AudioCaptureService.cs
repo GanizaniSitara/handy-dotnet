@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Threading.Tasks;
 using NAudio.Wave;
@@ -21,10 +22,12 @@ public sealed class AudioCaptureService : IDisposable
     private const int SampleRate  = 16000;
     private const int BytesPerSec = SampleRate * 2;
     private const int RingSeconds = 3;   // covers any reasonable pre-roll + slack
+    private const int CaptureStaleRestartMs = 750;
 
     private readonly object _lock = new();
     private readonly byte[] _ring = new byte[BytesPerSec * RingSeconds];
     private long _writePos;              // absolute byte count
+    private long _lastDataTicks;
     private WaveInEvent? _wave;
 
     private bool _recording;
@@ -67,6 +70,8 @@ public sealed class AudioCaptureService : IDisposable
     /// </summary>
     public void Start(int preRollMs)
     {
+        EnsureCaptureFresh();
+
         lock (_lock)
         {
             _recBuffer.SetLength(0);
@@ -76,6 +81,30 @@ public sealed class AudioCaptureService : IDisposable
             if (preRoll.Length > 0) _recBuffer.Write(preRoll, 0, preRoll.Length);
             _recording = true;
         }
+    }
+
+    /// <summary>
+    /// Read-only snapshot of the recording buffer so far. Does NOT clear the
+    /// buffer or stop recording — safe to call from a background thread while
+    /// capture continues. Returns empty if no recording is in progress.
+    /// Used by the speculative-recognition path to drive background ASR.
+    /// </summary>
+    public float[] SnapshotCurrentRecording()
+    {
+        byte[] pcm;
+        lock (_lock)
+        {
+            if (!_recording) return Array.Empty<float>();
+            pcm = _recBuffer.ToArray();
+        }
+
+        var samples = new float[pcm.Length / 2];
+        for (int i = 0, j = 0; i < pcm.Length - 1; i += 2, j++)
+        {
+            short s = (short)(pcm[i] | (pcm[i + 1] << 8));
+            samples[j] = s / 32768f;
+        }
+        return samples;
     }
 
     /// <summary>
@@ -104,13 +133,20 @@ public sealed class AudioCaptureService : IDisposable
         return samples;
     }
 
-    private void RestartCapture()
+    private void RestartCapture(bool clearBufferedAudio = false)
     {
         WaveInEvent? old;
         lock (_lock)
         {
             old = _wave;
             _wave = null;
+            if (clearBufferedAudio)
+            {
+                Array.Clear(_ring);
+                _writePos = 0;
+                _lastDataTicks = 0;
+                _recBuffer.SetLength(0);
+            }
         }
         try { old?.StopRecording(); } catch { }
         try { old?.Dispose(); } catch { }
@@ -136,6 +172,29 @@ public sealed class AudioCaptureService : IDisposable
             Log.Error($"Audio capture failed to start: {ex.Message}");
             w.Dispose();
         }
+    }
+
+    private void EnsureCaptureFresh()
+    {
+        WaveInEvent? wave;
+        long lastDataTicks;
+        long writePos;
+        lock (_lock)
+        {
+            wave = _wave;
+            lastDataTicks = _lastDataTicks;
+            writePos = _writePos;
+        }
+
+        var staleMs = lastDataTicks <= 0
+            ? long.MaxValue
+            : (Stopwatch.GetTimestamp() - lastDataTicks) * 1000 / Stopwatch.Frequency;
+
+        if (wave is not null && staleMs <= CaptureStaleRestartMs) return;
+
+        var lastData = lastDataTicks <= 0 ? "never" : $"{staleMs}ms ago";
+        Log.Warn($"Audio capture stale before recording (lastData={lastData}, bufferedBytes={writePos}); restarting capture.");
+        RestartCapture(clearBufferedAudio: true);
     }
 
     private static int ResolveDeviceIndex(string preferred)
@@ -172,6 +231,7 @@ public sealed class AudioCaptureService : IDisposable
                 Buffer.BlockCopy(e.Buffer, first, _ring, 0,          count - first);
             }
             _writePos += count;
+            _lastDataTicks = Stopwatch.GetTimestamp();
 
             if (_recording) _recBuffer.Write(e.Buffer, 0, count);
             recordingNow = _recording;

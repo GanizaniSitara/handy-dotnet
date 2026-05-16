@@ -122,6 +122,7 @@ foreach (var test in tests)
 
 AssertDisabledRulePersists();
 AssertWhisperVocabularyPromptBuilder();
+AssertSpeculativeCachePolicy();
 
 Console.WriteLine($"Domain correction fixture passed ({tests.Length} correction cases plus settings and prompt-builder checks).");
 
@@ -217,6 +218,47 @@ static void AssertWhisperVocabularyPromptBuilder()
 
     var empty = WhisperVocabularyPromptBuilder.Build(new[] { Rule("disabled", "DisabledTerm", enabled: false) });
     AssertEqual(false, empty.HasPrompt, "whisper prompt: disabled rules omitted");
+}
+
+static void AssertSpeculativeCachePolicy()
+{
+    var s = new AppSettings
+    {
+        BackgroundRecognitionEnabled = true,
+        BackgroundMinNewSpeechMs = 1500,
+        BackgroundCacheMaxStaleMs = 500,
+    };
+
+    // Identical lengths, fresh cache -> hit.
+    AssertEqual(true,
+        SpeculativeCachePolicy.ShouldReuseCache(finalVadSampleCount: 96_000, cacheVadSampleCount: 96_000, cacheAgeMs: 100, s),
+        "spec policy: identical lengths + fresh -> hit");
+
+    // Tail of silence trimmed by VAD: final slightly shorter than cache -> hit (delta within 1.5 s).
+    AssertEqual(true,
+        SpeculativeCachePolicy.ShouldReuseCache(finalVadSampleCount: 80_000, cacheVadSampleCount: 96_000, cacheAgeMs: 100, s),
+        "spec policy: final shorter within tolerance -> hit");
+
+    // User kept talking: final much longer than cache -> miss.
+    AssertEqual(false,
+        SpeculativeCachePolicy.ShouldReuseCache(finalVadSampleCount: 160_000, cacheVadSampleCount: 96_000, cacheAgeMs: 100, s),
+        "spec policy: final longer than tolerance -> miss");
+
+    // Stale cache -> miss.
+    AssertEqual(false,
+        SpeculativeCachePolicy.ShouldReuseCache(finalVadSampleCount: 96_000, cacheVadSampleCount: 96_000, cacheAgeMs: 600, s),
+        "spec policy: stale cache -> miss");
+
+    // Feature disabled -> miss regardless.
+    var off = new AppSettings { BackgroundRecognitionEnabled = false };
+    AssertEqual(false,
+        SpeculativeCachePolicy.ShouldReuseCache(finalVadSampleCount: 96_000, cacheVadSampleCount: 96_000, cacheAgeMs: 50, off),
+        "spec policy: feature flag off -> miss");
+
+    // Empty cache -> miss.
+    AssertEqual(false,
+        SpeculativeCachePolicy.ShouldReuseCache(finalVadSampleCount: 96_000, cacheVadSampleCount: 0, cacheAgeMs: 50, s),
+        "spec policy: empty cache -> miss");
 }
 
 internal sealed record TestCase(

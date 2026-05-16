@@ -37,6 +37,10 @@ public sealed class LowLevelKeyHookService : IDisposable
     private Hotkey _cancel;
     private Hotkey _copyLast;
     private bool   _triggerActive;
+    private bool   _leftCtrlDown,  _rightCtrlDown,  _ctrlDown;
+    private bool   _leftAltDown,   _rightAltDown,   _altDown;
+    private bool   _leftShiftDown, _rightShiftDown, _shiftDown;
+    private bool   _leftWinDown,   _rightWinDown;
 
     public LowLevelKeyHookService()
     {
@@ -49,6 +53,7 @@ public sealed class LowLevelKeyHookService : IDisposable
         _cancel   = cancel;
         _copyLast = copyLast;
         _triggerActive = false;
+        ResetTrackedModifiers();
         Log.Info($"Hotkey: trigger='{trigger.Display}' cancel='{cancel.Display}' copyLast='{copyLast.Display}'");
     }
 
@@ -77,9 +82,13 @@ public sealed class LowLevelKeyHookService : IDisposable
         var data = Marshal.PtrToStructure<NativeMethods.KBDLLHOOKSTRUCT>(lParam);
         var vk = data.vkCode;
 
-        // Skip modifier-only events — we wait for the base key and then sample modifier state.
+        // Track modifier events from the hook itself. Some foreground apps / remoting layers make
+        // GetAsyncKeyState report Ctrl as up by the time Space arrives, while the hook still saw it.
         if (IsModifier(vk))
+        {
+            UpdateModifierState(vk, isDown);
             return NativeMethods.CallNextHookEx(_hook, nCode, wParam, lParam);
+        }
 
         // Diagnostic: log every event matching the configured trigger VK, regardless of mod state.
         // Lets us confirm the hook is firing when the terminal has focus and whether mods/flags differ.
@@ -87,7 +96,9 @@ public sealed class LowLevelKeyHookService : IDisposable
         {
             try
             {
-                var mods = CurrentMods();
+                var asyncMods = CurrentMods();
+                var trackedMods = TrackedMods();
+                var mods = asyncMods | trackedMods;
                 var fg = NativeMethods.GetForegroundWindow();
                 var title = new StringBuilder(256);
                 var cls   = new StringBuilder(128);
@@ -102,7 +113,8 @@ public sealed class LowLevelKeyHookService : IDisposable
                 try { using var p = Process.GetProcessById((int)pid); procName = p.ProcessName; } catch { }
 
                 Log.Info($"HOOK vk=0x{vk:X2} {(isDown ? "DN" : "UP")} flags=0x{data.flags:X2} " +
-                         $"mods={mods} req={_trigger.Required} match={(_trigger.Required & mods) == _trigger.Required} " +
+                         $"mods={mods} async={asyncMods} tracked={trackedMods} req={_trigger.Required} " +
+                         $"match={(_trigger.Required & mods) == _trigger.Required} " +
                          $"active={_triggerActive} fg=[{procName}|{cls}|{title}]");
             }
             catch (Exception ex) { Log.Error($"HOOK diag: {ex.Message}"); }
@@ -119,7 +131,7 @@ public sealed class LowLevelKeyHookService : IDisposable
         // (e.g. Ctrl+Alt+Space trigger and Ctrl+Alt+Shift+Space copy-last) don't both fire.
         if (!_copyLast.IsEmpty && vk == _copyLast.Vk && isDown)
         {
-            var modsPressed = CurrentMods();
+            var modsPressed = ObservedMods();
             if ((_copyLast.Required & modsPressed) == _copyLast.Required)
             {
                 DispatchCopyLast();
@@ -130,7 +142,7 @@ public sealed class LowLevelKeyHookService : IDisposable
         // Trigger match.
         if (!_trigger.IsEmpty && vk == _trigger.Vk)
         {
-            var modsPressed = CurrentMods();
+            var modsPressed = ObservedMods();
             var allModsHeld = (_trigger.Required & modsPressed) == _trigger.Required;
 
             if (isDown && allModsHeld && !_triggerActive)
@@ -190,6 +202,44 @@ public sealed class LowLevelKeyHookService : IDisposable
     }
 
     private static bool KeyIsDown(uint vk) => (NativeMethods.GetAsyncKeyState((int)vk) & 0x8000) != 0;
+
+    private Hotkey.Mods ObservedMods() => CurrentMods() | TrackedMods();
+
+    private Hotkey.Mods TrackedMods()
+    {
+        Hotkey.Mods m = 0;
+        if (_leftCtrlDown  || _rightCtrlDown  || _ctrlDown)  m |= Hotkey.Mods.Ctrl;
+        if (_leftAltDown   || _rightAltDown   || _altDown)   m |= Hotkey.Mods.Alt;
+        if (_leftShiftDown || _rightShiftDown || _shiftDown) m |= Hotkey.Mods.Shift;
+        if (_leftWinDown   || _rightWinDown)                 m |= Hotkey.Mods.Win;
+        return m;
+    }
+
+    private void UpdateModifierState(uint vk, bool isDown)
+    {
+        switch (vk)
+        {
+            case VK_LCONTROL: _leftCtrlDown = isDown; break;
+            case VK_RCONTROL: _rightCtrlDown = isDown; break;
+            case VK_CONTROL:  _ctrlDown = isDown; break;
+            case VK_LMENU:    _leftAltDown = isDown; break;
+            case VK_RMENU:    _rightAltDown = isDown; break;
+            case VK_MENU:     _altDown = isDown; break;
+            case VK_LSHIFT:   _leftShiftDown = isDown; break;
+            case VK_RSHIFT:   _rightShiftDown = isDown; break;
+            case VK_SHIFT:    _shiftDown = isDown; break;
+            case VK_LWIN:     _leftWinDown = isDown; break;
+            case VK_RWIN:     _rightWinDown = isDown; break;
+        }
+    }
+
+    private void ResetTrackedModifiers()
+    {
+        _leftCtrlDown = _rightCtrlDown = _ctrlDown = false;
+        _leftAltDown = _rightAltDown = _altDown = false;
+        _leftShiftDown = _rightShiftDown = _shiftDown = false;
+        _leftWinDown = _rightWinDown = false;
+    }
 
     private static bool IsModifier(uint vk) =>
         vk == VK_LCONTROL || vk == VK_RCONTROL || vk == VK_CONTROL ||
