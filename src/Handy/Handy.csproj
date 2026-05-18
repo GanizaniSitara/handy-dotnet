@@ -14,7 +14,7 @@
     <PublishSingleFile Condition="'$(PublishSingleFile)' == ''">false</PublishSingleFile>
     <SelfContained Condition="'$(SelfContained)' == ''">false</SelfContained>
     <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
-    <Version>0.1.0</Version>
+    <VersionPrefix>0.1.0</VersionPrefix>
   </PropertyGroup>
 
   <ItemGroup>
@@ -23,5 +23,33 @@
     <PackageReference Include="Whisper.net" Version="1.9.0" />
     <PackageReference Include="Whisper.net.Runtime" Version="1.9.0" />
   </ItemGroup>
+
+  <!--
+    Stamp every build with a git-derived version so the displayed version
+    string changes whenever the working tree changes. AssemblyInformationalVersion
+    is composed by the SDK as "$(VersionPrefix)+$(SourceRevisionId)".
+    FileVersion 4th-part = commit count, so Explorer shows a bumped file version
+    on every commit even when VersionPrefix doesn't move. If git isn't on PATH
+    or this isn't a git checkout, the targets fall through and the bare
+    VersionPrefix is used.
+  -->
+  <Target Name="StampGitVersion" BeforeTargets="GetAssemblyVersion;BeforeBuild">
+    <Exec Command="git rev-list --count HEAD" ConsoleToMSBuild="true" IgnoreExitCode="true" ContinueOnError="WarnAndContinue" StandardOutputImportance="low">
+      <Output TaskParameter="ConsoleOutput" PropertyName="GitCommitCount" />
+    </Exec>
+    <Exec Command="git rev-parse --short=8 HEAD" ConsoleToMSBuild="true" IgnoreExitCode="true" ContinueOnError="WarnAndContinue" StandardOutputImportance="low">
+      <Output TaskParameter="ConsoleOutput" PropertyName="GitShortSha" />
+    </Exec>
+    <Exec Command="git status --porcelain" ConsoleToMSBuild="true" IgnoreExitCode="true" ContinueOnError="WarnAndContinue" StandardOutputImportance="low">
+      <Output TaskParameter="ConsoleOutput" PropertyName="GitStatusOut" />
+    </Exec>
+    <PropertyGroup>
+      <GitCommitCount Condition="'$(GitCommitCount)' != ''">$(GitCommitCount.Trim().TrimEnd(';'))</GitCommitCount>
+      <GitShortSha Condition="'$(GitShortSha)' != ''">$(GitShortSha.Trim().TrimEnd(';'))</GitShortSha>
+      <DirtyTag Condition="'$(GitStatusOut)' != ''">.dirty</DirtyTag>
+      <FileVersion Condition="'$(GitCommitCount)' != ''">$(VersionPrefix).$(GitCommitCount)</FileVersion>
+      <SourceRevisionId Condition="'$(GitShortSha)' != ''">$(GitCommitCount).g$(GitShortSha)$(DirtyTag)</SourceRevisionId>
+    </PropertyGroup>
+  </Target>
 
 </Project>

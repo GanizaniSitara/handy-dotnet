@@ -112,6 +112,11 @@ public sealed class AppSettings
     /// <summary>Parakeet | Whisper. Parakeet remains the default for existing installs.</summary>
     public string TranscriptionBackend { get; set; } = "Parakeet";
 
+    /// <summary>Auto | V2 | V3. Used only when TranscriptionBackend = Parakeet.
+    /// Auto: prefer v3 if installed, else v2 (legacy behaviour).
+    /// V2 / V3: force that variant; if the requested files aren't on disk, fall back to whatever's installed.</summary>
+    public string ParakeetVariant { get; set; } = "Auto";
+
     /// <summary>tiny.en | tiny | base | base.en | small | small.en. Used only when TranscriptionBackend = Whisper.</summary>
     public string WhisperModel { get; set; } = "base";
 

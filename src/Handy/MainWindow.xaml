@@ -497,6 +497,21 @@
                                         <ColumnDefinition Width="*"/>
                                         <ColumnDefinition Width="140"/>
                                     </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="Parakeet variant" Style="{StaticResource Text.SettingLabel}"
+                                               ToolTip="Auto prefers v3 if installed, else v2. Pick V2 or V3 to force a specific generation."/>
+                                    <ComboBox Grid.Column="1" x:Name="ParakeetVariantCombo" SelectionChanged="OnModelSelectionChanged">
+                                        <ComboBoxItem Content="Auto"/>
+                                        <ComboBoxItem Content="V2"/>
+                                        <ComboBoxItem Content="V3"/>
+                                    </ComboBox>
+                                </Grid>
+                            </Border>
+                            <Border Style="{StaticResource SettingsRow}">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="140"/>
+                                    </Grid.ColumnDefinitions>
                                     <TextBlock Grid.Column="0" Text="Whisper model" Style="{StaticResource Text.SettingLabel}"/>
                                     <ComboBox Grid.Column="1" x:Name="WhisperModelCombo" SelectionChanged="OnModelSelectionChanged">
                                         <ComboBoxItem Content="tiny.en"/>
