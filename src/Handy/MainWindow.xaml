@@ -13,25 +13,30 @@
                 BorderBrush="{StaticResource Brush.Border}"
                 BorderThickness="0,0,1,0"
                 Background="{StaticResource Brush.Background}">
-            <StackPanel>
-                <StackPanel Orientation="Horizontal" Margin="16,16,0,18">
+            <DockPanel LastChildFill="False">
+                <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="16,16,0,18">
                     <Path x:Name="LogoPath" Width="22" Height="24" Stretch="Uniform"
                           Fill="{StaticResource Brush.BackgroundUI}"
                           VerticalAlignment="Center"/>
                     <TextBlock Text="Handy.NET" Style="{StaticResource Text.AppTitle}"
                                Margin="10,0,0,0" VerticalAlignment="Center"/>
                 </StackPanel>
-                <Border Height="1" Background="{StaticResource Brush.Border}" Margin="10,0,10,8"/>
+                <Border DockPanel.Dock="Top" Height="1" Background="{StaticResource Brush.Border}" Margin="10,0,10,8"/>
 
-                <RadioButton x:Name="NavGeneral"  Style="{StaticResource SidebarItem}" Content="General"  IsChecked="True"
+                <RadioButton DockPanel.Dock="Top" x:Name="NavGeneral"  Style="{StaticResource SidebarItem}" Content="General"  IsChecked="True"
                              Checked="OnNavChecked"/>
-                <RadioButton x:Name="NavAdvanced" Style="{StaticResource SidebarItem}" Content="Advanced"
+                <RadioButton DockPanel.Dock="Top" x:Name="NavAdvanced" Style="{StaticResource SidebarItem}" Content="Advanced"
                              Checked="OnNavChecked"/>
-                <RadioButton x:Name="NavModels"   Style="{StaticResource SidebarItem}" Content="Models"
+                <RadioButton DockPanel.Dock="Top" x:Name="NavModels"   Style="{StaticResource SidebarItem}" Content="Models"
                              Checked="OnNavChecked"/>
-                <RadioButton x:Name="NavLog"      Style="{StaticResource SidebarItem}" Content="Log"
+                <RadioButton DockPanel.Dock="Top" x:Name="NavLog"      Style="{StaticResource SidebarItem}" Content="Log"
                              Checked="OnNavChecked"/>
-            </StackPanel>
+
+                <TextBlock DockPanel.Dock="Bottom" x:Name="VersionText"
+                           Margin="16,0,16,14"
+                           FontSize="11"
+                           Foreground="{StaticResource Brush.TextSubtle}"/>
+            </DockPanel>
         </Border>
 
         <!-- ════════════════════════════════════════════════ FOOTER ════ -->

@@ -26,6 +26,8 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
         LogoPath.Data = Geometry.Parse(IconAssets.HandPathData);
+        var v = typeof(MainWindow).Assembly.GetName().Version;
+        VersionText.Text = v is null ? "" : $"v{v.Major}.{v.Minor}.{v.Build}";
         Log.Sink = AppendLine;
 
         Loaded += (_, _) => LoadFromSettings();
