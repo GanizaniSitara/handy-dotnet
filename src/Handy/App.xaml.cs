@@ -165,7 +165,7 @@ public partial class App : Application
                 onCopyLast:     () => CopyLastTranscript(),
                 onOpenHistory:  () => ShowHistory(),
                 onCancel:       () => OnCancel(),
-                onQuit:         () => Shutdown());
+                onExit:         () => Shutdown());
         }
 
         _hook = new LowLevelKeyHookService();
