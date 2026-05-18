@@ -8,7 +8,7 @@ namespace Handy.Services;
 /// <summary>
 /// System tray icon via WinForms NotifyIcon, hosted inside a WPF app
 /// (UseWindowsForms=true). Menu mirrors a subset of upstream: Settings,
-/// Copy Last Transcript, Cancel, Quit. The icon is re-rendered with a
+/// Copy Last Transcript, Cancel, Exit. The icon is re-rendered with a
 /// state-driven fill colour so the tray reflects Idle/Recording/Transcribing
 /// at a glance.
 /// </summary>
@@ -31,7 +31,7 @@ public sealed class TrayIconManager : IDisposable
         Action onCopyLast,
         Action onOpenHistory,
         Action onCancel,
-        Action onQuit)
+        Action onExit)
     {
         _statusItem = new ToolStripMenuItem("Idle") { Enabled = false };
         _cancelItem = new ToolStripMenuItem("Cancel recording", null, (_, _) => onCancel())
@@ -47,7 +47,7 @@ public sealed class TrayIconManager : IDisposable
         menu.Items.Add("History…",              null, (_, _) => onOpenHistory());
         menu.Items.Add(_cancelItem);
         menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add("Quit", null, (_, _) => onQuit());
+        menu.Items.Add("Exit", null, (_, _) => onExit());
 
         _currentIcon = IconAssets.RenderHandTrayIcon(IdleColor);
         _icon = new NotifyIcon
