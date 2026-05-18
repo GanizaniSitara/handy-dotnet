@@ -96,7 +96,7 @@ public partial class App : Application
         _settings = AppSettings.Load(_dataDir);
         AutostartService.Apply(_settings.Autostart);
 
-        _parakeetModelDir = ResolveModelDir(_dataDir);
+        _parakeetModelDir = ResolveModelDir(_dataDir, _settings.ParakeetVariant);
 
         // --transcribe-file <path>: skip the UI, transcribe the file, write
         // the result to %APPDATA%\Handy\last-transcript.txt, exit.
@@ -816,11 +816,16 @@ public partial class App : Application
     {
         var backend = NormalizeBackend(_settings.TranscriptionBackend);
         var whisperModel = WhisperTranscriptionService.NormalizeModelName(_settings.WhisperModel);
+        var variant = NormalizeParakeetVariant(_settings.ParakeetVariant);
         _settings.TranscriptionBackend = backend;
         _settings.WhisperModel = whisperModel;
+        _settings.ParakeetVariant = variant;
+
+        var newParakeetDir = ResolveModelDir(_dataDir, variant);
 
         if (string.Equals(backend, _activeBackend, StringComparison.OrdinalIgnoreCase) &&
-            string.Equals(whisperModel, _activeWhisperModel, StringComparison.OrdinalIgnoreCase))
+            string.Equals(whisperModel, _activeWhisperModel, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(newParakeetDir, _parakeetModelDir, StringComparison.OrdinalIgnoreCase))
         {
             return;
         }
@@ -832,6 +837,7 @@ public partial class App : Application
         }
 
         var old = _asr;
+        _parakeetModelDir = newParakeetDir;
         _asr = CreateTranscriptionService(_settings, _dataDir, _parakeetModelDir);
         _activeBackend = backend;
         _activeWhisperModel = whisperModel;
@@ -858,7 +864,7 @@ public partial class App : Application
             _asr?.IsReady == true);
     }
 
-    internal ModelRuntimeStatus DescribeModelSelection(string backend, string whisperModel)
+    internal ModelRuntimeStatus DescribeModelSelection(string backend, string whisperModel, string parakeetVariant)
     {
         backend = NormalizeBackend(backend);
         if (string.Equals(backend, "Whisper", StringComparison.OrdinalIgnoreCase))
@@ -868,7 +874,7 @@ public partial class App : Application
             return new ModelRuntimeStatus("Whisper", $"Whisper {modelName}", path, File.Exists(path));
         }
 
-        var parakeetModelDir = ResolveModelDir(_dataDir);
+        var parakeetModelDir = ResolveModelDir(_dataDir, parakeetVariant);
         return new ModelRuntimeStatus(
             "Parakeet",
             DescribeParakeetModelName(parakeetModelDir),
@@ -964,7 +970,7 @@ public partial class App : Application
             }
 
             var settings = AppSettings.Load(dataDir);
-            var parakeetModelDir = ResolveModelDir(dataDir);
+            var parakeetModelDir = ResolveModelDir(dataDir, settings.ParakeetVariant);
             var backend = NormalizeBackend(settings.TranscriptionBackend);
             using var asr = CreateTranscriptionService(settings, dataDir, parakeetModelDir);
             if (!asr.IsReady)
@@ -1077,7 +1083,7 @@ public partial class App : Application
             }
 
             var settings = AppSettings.Load(dataDir);
-            var parakeetModelDir = ResolveModelDir(dataDir);
+            var parakeetModelDir = ResolveModelDir(dataDir, settings.ParakeetVariant);
             var backend = NormalizeBackend(settings.TranscriptionBackend);
             var whisperModel = WhisperTranscriptionService.NormalizeModelName(settings.WhisperModel);
             var loadSw = Stopwatch.StartNew();
@@ -1130,7 +1136,7 @@ public partial class App : Application
         }
     }
 
-    private static string ResolveModelDir(string dataDir)
+    private static string ResolveModelDir(string dataDir, string preferredVariant)
     {
         var env = Environment.GetEnvironmentVariable("HANDY_MODEL_DIR");
         if (!string.IsNullOrWhiteSpace(env) && HasParakeetAssets(env))
@@ -1138,7 +1144,18 @@ public partial class App : Application
 
         var localModels = Path.Combine(dataDir, "models");
         Directory.CreateDirectory(localModels);
-        foreach (var name in new[] { "parakeet-tdt-0.6b-v3-int8", "parakeet-tdt-0.6b-v2-int8" })
+
+        // Search order depends on the user's variant preference. V2/V3 force
+        // that variant first; the other is kept as a fallback so a stale
+        // setting doesn't leave the recogniser unloaded.
+        var names = NormalizeParakeetVariant(preferredVariant) switch
+        {
+            "V2" => new[] { "parakeet-tdt-0.6b-v2-int8", "parakeet-tdt-0.6b-v3-int8" },
+            "V3" => new[] { "parakeet-tdt-0.6b-v3-int8", "parakeet-tdt-0.6b-v2-int8" },
+            _    => new[] { "parakeet-tdt-0.6b-v3-int8", "parakeet-tdt-0.6b-v2-int8" },
+        };
+
+        foreach (var name in names)
         {
             var candidate = Path.Combine(localModels, name);
             if (HasParakeetAssets(candidate)) return candidate;
@@ -1147,7 +1164,7 @@ public partial class App : Application
         var upstream = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
             "com.pais.handy", "models");
-        foreach (var name in new[] { "parakeet-tdt-0.6b-v3-int8", "parakeet-tdt-0.6b-v2-int8" })
+        foreach (var name in names)
         {
             var candidate = Path.Combine(upstream, name);
             if (HasParakeetAssets(candidate)) return candidate;
@@ -1155,6 +1172,14 @@ public partial class App : Application
 
         return Path.Combine(localModels, "parakeet-tdt-0.6b-v2-int8");
     }
+
+    internal static string NormalizeParakeetVariant(string? v) =>
+        (v ?? string.Empty).Trim().ToUpperInvariant() switch
+        {
+            "V2" => "V2",
+            "V3" => "V3",
+            _    => "Auto",
+        };
 
     private static string ResolveDataDir(string[] args)
     {

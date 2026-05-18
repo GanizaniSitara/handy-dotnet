@@ -26,8 +26,10 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
         LogoPath.Data = Geometry.Parse(IconAssets.HandPathData);
-        var v = typeof(MainWindow).Assembly.GetName().Version;
-        VersionText.Text = v is null ? "" : $"v{v.Major}.{v.Minor}.{v.Build}";
+        var versionLabel = ResolveDisplayVersion();
+        VersionText.Text = string.IsNullOrEmpty(versionLabel) ? "" : $"v{versionLabel}";
+        if (!string.IsNullOrEmpty(versionLabel))
+            Title = $"Handy.NET — Settings (v{versionLabel})";
         Log.Sink = AppendLine;
 
         Loaded += (_, _) => LoadFromSettings();
@@ -41,6 +43,21 @@ public partial class MainWindow : Window
             var src = HwndSource.FromHwnd(new WindowInteropHelper(this).Handle);
             src?.AddHook(WndProc);
         };
+    }
+
+    // InformationalVersion carries the full git-derived stamp (commit count +
+    // short SHA + dirty flag) injected by the build target in Handy.csproj.
+    // Fall back to the plain AssemblyVersion if the attribute is missing
+    // (e.g. when running outside a git checkout).
+    private static string ResolveDisplayVersion()
+    {
+        var asm = typeof(MainWindow).Assembly;
+        var info = asm.GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute), false)
+            .OfType<System.Reflection.AssemblyInformationalVersionAttribute>()
+            .FirstOrDefault()?.InformationalVersion;
+        if (!string.IsNullOrWhiteSpace(info)) return info;
+        var v = asm.GetName().Version;
+        return v is null ? string.Empty : $"{v.Major}.{v.Minor}.{v.Build}";
     }
 
     private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
@@ -67,7 +84,8 @@ public partial class MainWindow : Window
         var active = app.GetActiveModelStatus();
         var selectedBackend = ComboContent(TranscriptionBackendCombo, _settings?.TranscriptionBackend ?? active.Backend);
         var selectedWhisperModel = ComboContent(WhisperModelCombo, _settings?.WhisperModel ?? "base");
-        var pending = app.DescribeModelSelection(selectedBackend, selectedWhisperModel);
+        var selectedParakeetVariant = ComboContent(ParakeetVariantCombo, _settings?.ParakeetVariant ?? "Auto");
+        var pending = app.DescribeModelSelection(selectedBackend, selectedWhisperModel, selectedParakeetVariant);
 
         ActiveModelSummaryText.Text = $"{active.ModelName} ({active.Backend})";
         ActiveModelStatusText.Text = active.IsReady
@@ -99,6 +117,8 @@ public partial class MainWindow : Window
         WhisperPromptCheck.Opacity = whisperSelected ? 1.0 : 0.55;
         WhisperCarryPromptCheck.IsEnabled = whisperSelected;
         WhisperCarryPromptCheck.Opacity = whisperSelected ? 1.0 : 0.55;
+        ParakeetVariantCombo.IsEnabled = !whisperSelected;
+        ParakeetVariantCombo.Opacity = whisperSelected ? 0.55 : 1.0;
     }
 
     private void LoadFromSettings()
@@ -153,6 +173,7 @@ public partial class MainWindow : Window
             HistoryLimitBox.Text = _settings.HistoryLimit.ToString();
 
             SelectComboByContent(TranscriptionBackendCombo, _settings.TranscriptionBackend);
+            SelectComboByContent(ParakeetVariantCombo, App.NormalizeParakeetVariant(_settings.ParakeetVariant));
             SelectComboByContent(WhisperModelCombo, WhisperTranscriptionService.NormalizeModelName(_settings.WhisperModel));
             WhisperPromptCheck.IsChecked = _settings.WhisperVocabularyPromptEnabled;
             WhisperCarryPromptCheck.IsChecked = _settings.WhisperCarryInitialPrompt;
@@ -250,6 +271,8 @@ public partial class MainWindow : Window
             _settings.HistoryLimit = hl;
 
         _settings.TranscriptionBackend = (string?)((ComboBoxItem)TranscriptionBackendCombo.SelectedItem)?.Content ?? "Parakeet";
+        _settings.ParakeetVariant = App.NormalizeParakeetVariant(
+            (string?)((ComboBoxItem)ParakeetVariantCombo.SelectedItem)?.Content);
         _settings.WhisperModel = (string?)((ComboBoxItem)WhisperModelCombo.SelectedItem)?.Content ?? "base";
         _settings.WhisperVocabularyPromptEnabled = WhisperPromptCheck.IsChecked == true;
         _settings.WhisperCarryInitialPrompt = WhisperCarryPromptCheck.IsChecked == true;
