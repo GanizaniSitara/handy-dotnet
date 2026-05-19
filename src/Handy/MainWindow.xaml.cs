@@ -144,6 +144,9 @@ public partial class MainWindow : Window
 
             PasteDelayBox.Text      = _settings.PasteDelayMs.ToString();
             DirectCharDelayBox.Text = _settings.DirectCharDelayMs.ToString();
+            DirectCharDelayCitrixBox.Text = _settings.DirectCharDelayMsCitrix.ToString();
+            SelectComboByContent(LogDisplayVerbosityCombo, _settings.LogDisplayVerbosity);
+            SelectComboByContent(LogFileVerbosityCombo,    _settings.LogFileVerbosity);
             PreRollBox.Text         = _settings.PreRollMs.ToString();
             PostRollBox.Text        = _settings.PostRollMs.ToString();
 
@@ -242,6 +245,9 @@ public partial class MainWindow : Window
 
         if (int.TryParse(PasteDelayBox.Text,      out var ms)    && ms    is >= 0 and <= 2000) _settings.PasteDelayMs      = ms;
         if (int.TryParse(DirectCharDelayBox.Text, out var dc)    && dc    is >= 0 and <= 100)  _settings.DirectCharDelayMs = dc;
+        if (int.TryParse(DirectCharDelayCitrixBox.Text, out var dcc) && dcc is >= 0 and <= 100) _settings.DirectCharDelayMsCitrix = dcc;
+        _settings.LogDisplayVerbosity = ComboContent(LogDisplayVerbosityCombo, _settings.LogDisplayVerbosity);
+        _settings.LogFileVerbosity    = ComboContent(LogFileVerbosityCombo,    _settings.LogFileVerbosity);
         if (int.TryParse(PreRollBox.Text,         out var pre)   && pre   is >= 0 and <= 2000) _settings.PreRollMs         = pre;
         if (int.TryParse(PostRollBox.Text,        out var post)  && post  is >= 0 and <= 2000) _settings.PostRollMs        = post;
 
@@ -318,6 +324,19 @@ public partial class MainWindow : Window
         RefreshModelStatus();
     }
 
+    // Verbosity drop-downs apply live — no need to click Apply just to filter
+    // the log view. The persisted setting still only changes on Apply, but
+    // Log.SetVerbosity is updated immediately so the panel reflects the change.
+    private void OnLogVerbosityChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_loading) return;
+        var display = Log.ParseVerbosity(ComboContent(LogDisplayVerbosityCombo, _settings?.LogDisplayVerbosity ?? "Normal"),
+                                         LogVerbosity.Normal);
+        var file    = Log.ParseVerbosity(ComboContent(LogFileVerbosityCombo,    _settings?.LogFileVerbosity    ?? "Debug"),
+                                         LogVerbosity.Debug);
+        Log.SetVerbosity(file, display);
+    }
+
     private void OnHotkeyBoxKeyDown(object sender, KeyEventArgs e)   => CaptureChord(HotkeyBox, e);
     private void OnCancelBoxKeyDown(object sender, KeyEventArgs e)   => CaptureChord(CancelBox, e, singleKey: true);
     private void OnCopyLastBoxKeyDown(object sender, KeyEventArgs e) => CaptureChord(CopyLastBox, e);
@@ -390,7 +409,6 @@ public partial class MainWindow : Window
     }
 
     private void OnHide(object sender, RoutedEventArgs e) => Hide();
-    private void OnQuit(object sender, RoutedEventArgs e) => Application.Current.Shutdown();
 
     private void OnNavChecked(object sender, RoutedEventArgs e)
     {

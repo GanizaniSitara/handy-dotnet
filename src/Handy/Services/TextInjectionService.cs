@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Windows;
@@ -27,9 +28,11 @@ public sealed class TextInjectionService
 
         if (string.Equals(method, "Direct", StringComparison.OrdinalIgnoreCase))
         {
-            var sent = SendUnicodeString(text, settings.DirectCharDelayMs);
+            var citrix = IsCitrixForeground();
+            var delay = citrix ? settings.DirectCharDelayMsCitrix : settings.DirectCharDelayMs;
+            var sent = SendUnicodeString(text, delay);
             var directErr = Marshal.GetLastWin32Error();
-            Log.Info($"Paste: Direct SendInput events injected={sent} (expected={text.Length * 2}), lastErr={directErr}");
+            Log.Info($"Paste: Direct SendInput events injected={sent} (expected={text.Length * 2}), lastErr={directErr}, citrix={citrix}, charDelayMs={delay}");
             SendAutoSubmit(settings.AutoSubmitKey);
             return;
         }
@@ -43,7 +46,8 @@ public sealed class TextInjectionService
         if (!TrySetClipboard(text))
         {
             Log.Warn("Clipboard set failed; falling back to direct keystroke injection.");
-            SendUnicodeString(text, settings.DirectCharDelayMs);
+            var citrix = IsCitrixForeground();
+            SendUnicodeString(text, citrix ? settings.DirectCharDelayMsCitrix : settings.DirectCharDelayMs);
             SendAutoSubmit(settings.AutoSubmitKey);
             return;
         }
@@ -225,6 +229,36 @@ public sealed class TextInjectionService
             return $"[{cls}|{title}|0x{hwnd.ToInt64():X}]";
         }
         catch (Exception ex) { return $"(err: {ex.Message})"; }
+    }
+
+    // Known Citrix client process names (case-insensitive, no .exe).
+    // CDViewer = Desktop Viewer (seamless + full-desktop sessions);
+    // wfica32 = legacy ICA engine; Receiver / SelfService = older client builds;
+    // CitrixWorkspaceApp / Workspace = current Workspace App.
+    private static readonly string[] CitrixProcessNames =
+    {
+        "cdviewer", "wfica32", "receiver", "selfservice",
+        "citrixworkspaceapp", "workspace",
+    };
+
+    private static bool IsCitrixForeground()
+    {
+        try
+        {
+            var hwnd = NativeMethods.GetForegroundWindow();
+            if (hwnd == IntPtr.Zero) return false;
+            NativeMethods.GetWindowThreadProcessId(hwnd, out var pid);
+            if (pid == 0) return false;
+            using var p = Process.GetProcessById((int)pid);
+            var name = p.ProcessName;
+            foreach (var candidate in CitrixProcessNames)
+            {
+                if (string.Equals(name, candidate, StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+            return false;
+        }
+        catch { return false; }
     }
 
     private static NativeMethods.INPUT Key(ushort vk, bool down) => new()
