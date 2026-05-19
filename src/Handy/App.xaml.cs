@@ -96,6 +96,10 @@ public partial class App : Application
         _settings = AppSettings.Load(_dataDir);
         AutostartService.Apply(_settings.Autostart);
 
+        Log.SetVerbosity(
+            file:    Log.ParseVerbosity(_settings.LogFileVerbosity,    LogVerbosity.Debug),
+            display: Log.ParseVerbosity(_settings.LogDisplayVerbosity, LogVerbosity.Normal));
+
         _parakeetModelDir = ResolveModelDir(_dataDir, _settings.ParakeetVariant);
 
         // --transcribe-file <path>: skip the UI, transcribe the file, write
@@ -210,6 +214,9 @@ public partial class App : Application
     internal void ReloadSettings()
     {
         // Caller has already mutated _settings; just re-apply side effects.
+        Log.SetVerbosity(
+            file:    Log.ParseVerbosity(_settings.LogFileVerbosity,    LogVerbosity.Debug),
+            display: Log.ParseVerbosity(_settings.LogDisplayVerbosity, LogVerbosity.Normal));
         ReloadTranscriptionServiceIfNeeded();
         _hook?.Configure(
             Hotkey.Parse(_settings.Hotkey),

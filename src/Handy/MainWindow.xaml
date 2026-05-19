@@ -47,7 +47,6 @@
                 Padding="14,10">
             <DockPanel LastChildFill="True">
                 <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
-                    <Button Style="{StaticResource SecondaryButton}" Content="Exit" Click="OnQuit" Margin="0,0,8,0"/>
                     <Button Style="{StaticResource SecondaryButton}" Content="Minimize" Click="OnHide" Margin="0,0,8,0"/>
                     <Button Style="{StaticResource PrimaryButton}"   Content="Apply" Click="OnApply"/>
                 </StackPanel>
@@ -371,9 +370,31 @@
                                         <ColumnDefinition Width="80"/>
                                     </Grid.ColumnDefinitions>
                                     <TextBlock Grid.Column="0" Text="Direct per-char delay (ms)" Style="{StaticResource Text.SettingLabel}"
-                                               ToolTip="Only used when Paste method = Direct. 0 = fastest. Try 2–3 ms for Citrix/RDP."/>
+                                               ToolTip="Per-char throttle for Direct paste into LOCAL apps. 0 = fastest; native desktops handle full speed. Citrix gets its own delay in the CITRIX section below."/>
                                     <TextBox   Grid.Column="1" x:Name="DirectCharDelayBox"/>
                                 </Grid>
+                            </Border>
+                        </StackPanel>
+                    </Border>
+
+                    <TextBlock Text="CITRIX" Style="{StaticResource Text.SectionGroupTitle}"/>
+                    <Border Style="{StaticResource SettingsCard}">
+                        <StackPanel>
+                            <Border Style="{StaticResource SettingsRowFirst}">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="80"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="Direct per-char delay (ms)" Style="{StaticResource Text.SettingLabel}"
+                                               ToolTip="Per-char throttle for Direct paste when the foreground window is a Citrix client (CDViewer / wfica32 / Receiver / Workspace). Citrix forwards keystrokes through its own pipeline and drops or reorders Unicode events at full speed — a few ms here usually fixes garbling. Default 1."/>
+                                    <TextBox   Grid.Column="1" x:Name="DirectCharDelayCitrixBox"/>
+                                </Grid>
+                            </Border>
+                            <Border Style="{StaticResource SettingsRow}">
+                                <TextBlock Style="{StaticResource Text.Hint}">
+                                    Citrix detection auto-picks this delay only when the foreground process is a known Citrix client. Local apps keep the fast path above.
+                                </TextBlock>
                             </Border>
                         </StackPanel>
                     </Border>
@@ -642,13 +663,40 @@
             </ScrollViewer>
 
             <!-- ─────────────────────────────────────────── LOG ─────── -->
-            <Grid x:Name="PanelLog" Margin="14,14,14,14" Visibility="Collapsed">
+            <DockPanel x:Name="PanelLog" Margin="14,14,14,14" Visibility="Collapsed" LastChildFill="True">
+                <Border DockPanel.Dock="Top" Padding="0,0,0,10">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="Display" VerticalAlignment="Center" Margin="0,0,8,0"
+                                   Style="{StaticResource Text.SettingLabel}"
+                                   ToolTip="Which INFO lines appear in this Log panel. Warnings and errors always pass through."/>
+                        <ComboBox x:Name="LogDisplayVerbosityCombo" Width="110" Margin="0,0,20,0"
+                                  SelectionChanged="OnLogVerbosityChanged">
+                            <ComboBoxItem Content="Quiet"/>
+                            <ComboBoxItem Content="Normal"/>
+                            <ComboBoxItem Content="Verbose"/>
+                            <ComboBoxItem Content="Debug"/>
+                        </ComboBox>
+                        <TextBlock Text="File" VerticalAlignment="Center" Margin="0,0,8,0"
+                                   Style="{StaticResource Text.SettingLabel}"
+                                   ToolTip="Which INFO lines are written to %APPDATA%\Handy\handy.log on disk. Default Debug keeps the full forensic trail."/>
+                        <ComboBox x:Name="LogFileVerbosityCombo" Width="110" Margin="0,0,20,0"
+                                  SelectionChanged="OnLogVerbosityChanged">
+                            <ComboBoxItem Content="Quiet"/>
+                            <ComboBoxItem Content="Normal"/>
+                            <ComboBoxItem Content="Verbose"/>
+                            <ComboBoxItem Content="Debug"/>
+                        </ComboBox>
+                        <TextBlock VerticalAlignment="Center" FontSize="11"
+                                   Foreground="{StaticResource Brush.TextSubtle}"
+                                   Text="Quiet = Raw / Filter / Transcript only · Normal adds Paste &amp; startup · Verbose adds VAD / ASR / Flow / Diag · Debug adds HOOK firehose"/>
+                    </StackPanel>
+                </Border>
                 <TextBox x:Name="LogBox" IsReadOnly="True" FontFamily="Consolas" FontSize="12"
                          VerticalScrollBarVisibility="Auto" TextWrapping="Wrap"
                          Background="#FF1B1F23" Foreground="#FFE6EDF3"
                          BorderBrush="{StaticResource Brush.Border}" BorderThickness="1"
                          Padding="10" VerticalContentAlignment="Top"/>
-            </Grid>
+            </DockPanel>
 
         </Grid>
 

@@ -35,9 +35,16 @@ public sealed class AppSettings
 
     public int PasteDelayMs { get; set; } = 50;
 
-    /// <summary>Per-character sleep (ms) for Direct paste mode. 0 = max speed (native desktops).
-    /// Citrix/VDI sessions need a few ms to stop keystrokes being dropped or reordered.</summary>
+    /// <summary>Per-character sleep (ms) for Direct paste mode into LOCAL apps.
+    /// 0 = max speed (native desktops). The Citrix-detected path uses
+    /// <see cref="DirectCharDelayMsCitrix"/> instead.</summary>
     public int DirectCharDelayMs { get; set; } = 0;
+
+    /// <summary>Per-character sleep (ms) for Direct paste mode when the foreground
+    /// window belongs to a Citrix client (CDViewer / wfica32 / Receiver / Workspace
+    /// app). Citrix's keystroke forwarding can drop or reorder Unicode events at
+    /// full speed, so we throttle just this path. Local pastes stay fast.</summary>
+    public int DirectCharDelayMsCitrix { get; set; } = 1;
 
     public bool AppendTrailingSpace { get; set; } = false;
 
@@ -138,6 +145,16 @@ public sealed class AppSettings
     /// <summary>Explicit post-filter phrase corrections for domain vocabulary.
     /// Empty by default so ordinary dictation is never changed unless the user opts in.</summary>
     public List<DomainCorrection> DomainCorrections { get; set; } = new();
+
+    /// <summary>Quiet | Normal | Verbose | Debug. Controls which INFO lines appear
+    /// in the in-app Log tab. WARN and ERROR always pass through. Default Normal —
+    /// shows Raw / Filter / Transcript / Paste / startup, hides VAD/ASR/HOOK noise.</summary>
+    public string LogDisplayVerbosity { get; set; } = "Normal";
+
+    /// <summary>Quiet | Normal | Verbose | Debug. Controls which INFO lines are
+    /// written to handy.log on disk. Default Debug — keep the full forensic trail
+    /// even if the in-app display is filtered down for readability.</summary>
+    public string LogFileVerbosity { get; set; } = "Debug";
 
     [JsonIgnore]
     public string FilePath { get; private set; } = string.Empty;
