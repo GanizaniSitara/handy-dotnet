@@ -35,6 +35,65 @@ The port keeps the upstream feature set while building on the standard
 - Runtime is the in-box `.NET 8 Desktop Runtime` — or publish self-contained
   and drop the folder.
 
+## Differences from upstream Handy
+
+This port has drifted into a Windows-flavoured branch of the design. The core
+loop (hotkey → capture → ASR → paste) is identical. The differences worth
+calling out:
+
+**Added in this port:**
+
+- **Direct paste mode with per-app delay tuning.** A `Direct` paste method
+  injects each character via `KEYEVENTF_UNICODE` SendInput, which avoids
+  the clipboard entirely. Useful for terminals and shells that swallow
+  `Ctrl+V`. A per-char delay is exposed so the throttle can be tuned per
+  environment.
+- **Citrix auto-detection.** When the foreground window belongs to a
+  Citrix client (`CDViewer`, `wfica32`, `Receiver`, `SelfService`,
+  `CitrixWorkspaceApp`, `Workspace`), Direct paste uses a separate
+  per-char delay so the client's keystroke forwarding doesn't drop or
+  reorder Unicode events. Local apps keep the fast (zero-delay) path.
+- **Copy-last-transcript hotkey** (default `Ctrl+Alt+Shift+Space`) puts
+  the most recent transcript back on the clipboard. Recovery path when a
+  paste fails silently — common in VDI / Citrix / integrity-level-mismatch
+  terminal windows.
+- **Domain glossary with context.** Beyond the upstream filler/stutter
+  filter, an editable rule set rewrites mistranscribed business terms to a
+  canonical form, with optional required-context and blocked-context
+  predicates per rule.
+- **Whisper vocabulary prompting** built from enabled glossary canonical
+  terms. Whisper-only (Parakeet's current ONNX greedy decoder has no
+  prompt input). Opt-in; logged when active.
+- **Speculative / additive recognition.** Detects natural pauses during
+  recording and runs an ASR pass on the audio captured so far; on
+  hotkey-release only the tail since the snapshot is decoded, then
+  spliced. Trades a little CPU for noticeably shorter perceived wait on
+  long dictations. Experimental, off by default.
+- **Parakeet variant selector** in Settings — `Auto / V2 / V3`. Auto
+  prefers v3 when installed; explicit choice forces that variant. V2 is
+  faster, V3 is generally more accurate on hard audio.
+- **Log verbosity tiers.** Quiet / Normal / Verbose / Debug, applied
+  independently to the in-app Log panel and the on-disk log file. Quiet
+  gives just text-in / text-out; Debug adds the per-keypress firehose.
+- **Git-derived version stamp.** Every build's title bar and footer carry
+  `<semver>+<commit-count>.g<sha>[.dirty]` so you can tell at a glance
+  which build you're running.
+- **Benchmarks** for ASR latency, vocabulary biasing A/B, WER against a
+  parallel-history baseline, and additive background recognition. Living
+  under `bench/` and `docs/asr-*.md`.
+
+**Not (yet) in this port:**
+
+- **Cross-platform.** Windows-only. Upstream supports macOS and Linux.
+- **LLM post-processing.** Upstream can route transcripts through an
+  OpenAI-compatible API for cleanup; this port does not.
+- **Theme-aware tray icons.** This port uses a single palette.
+- **Proper TDT duration-head consumption.** Both consume the encoder /
+  decoder / joiner outputs, but this port currently uses vocab logits
+  only for greedy decoding rather than the full TDT duration head. Output
+  is correct for the supported model set; the deferred work is in
+  [FEATURES.md](FEATURES.md).
+
 ## Framework choice: WPF over WinUI 3
 
 - WPF runs on the in-box `Microsoft.WindowsDesktop.App` runtime and publishes as a plain unpackaged `.exe`. WinUI 3 requires the Windows App SDK bootstrapper and MSIX packaging, which adds runtime prerequisites we preferred to avoid.
@@ -260,7 +319,7 @@ Implemented:
 - Paste methods: Ctrl+V, Direct, Ctrl+Shift+V, Shift+Insert, None.
 - Paste delay + trailing-space + always-copy-to-clipboard options.
 - Copy-last-transcript hotkey and tray action.
-- Tray menu with Settings / History / Copy Last Transcript / Cancel / Quit.
+- Tray menu with Settings / History / Copy Last Transcript / Cancel / Exit.
 - Recording overlay (top / bottom / none), click-through.
 - Audio feedback beeps on start / stop / cancel.
 - Autostart on login (HKCU Run key).
