@@ -287,7 +287,16 @@
                         </StackPanel>
                     </Border>
 
-                    <TextBlock Text="DOMAIN TERMS" Style="{StaticResource Text.SectionGroupTitle}"/>
+                    <DockPanel Margin="14,18,14,6">
+                        <Button DockPanel.Dock="Right"
+                                Style="{StaticResource SecondaryButton}"
+                                Content="Open help"
+                                Click="OnOpenDomainTermsHelp"/>
+                        <TextBlock Text="DOMAIN TERMS"
+                                   Style="{StaticResource Text.SectionGroupTitle}"
+                                   Margin="0"
+                                   VerticalAlignment="Center"/>
+                    </DockPanel>
                     <Border Style="{StaticResource SettingsCard}">
                         <StackPanel>
                             <Border Style="{StaticResource SettingsRowFirst}">
@@ -324,6 +333,11 @@
                                                             Width="180"/>
                                     </DataGrid.Columns>
                                 </DataGrid>
+                            </Border>
+                            <Border Style="{StaticResource SettingsRow}">
+                                <TextBlock Style="{StaticResource Text.Hint}">
+                                    Canonical is the final spelling. Variants are what ASR hears. Require Any and Block are optional semicolon-separated context gates. Click Open help for examples.
+                                </TextBlock>
                             </Border>
                         </StackPanel>
                     </Border>
