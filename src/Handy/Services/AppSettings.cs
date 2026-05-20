@@ -44,7 +44,7 @@ public sealed class AppSettings
     /// window belongs to a Citrix client (CDViewer / wfica32 / Receiver / Workspace
     /// app). Citrix's keystroke forwarding can drop or reorder Unicode events at
     /// full speed, so we throttle just this path. Local pastes stay fast.</summary>
-    public int DirectCharDelayMsCitrix { get; set; } = 1;
+    public int DirectCharDelayMsCitrix { get; set; } = 2;
 
     public bool AppendTrailingSpace { get; set; } = false;
 
