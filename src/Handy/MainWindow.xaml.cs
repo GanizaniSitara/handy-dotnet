@@ -2,7 +2,9 @@ using System;
 using System.Collections.ObjectModel;
 using System.Collections.Generic;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Globalization;
+using System.IO;
 using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
@@ -500,6 +502,39 @@ public partial class MainWindow : Window
     {
         var w = new HistoryWindow();
         w.Show();
+    }
+
+    private void OnOpenDomainTermsHelp(object sender, RoutedEventArgs e)
+    {
+        var candidates = new[]
+        {
+            Path.Combine(AppContext.BaseDirectory, "docs", "domain-terms.md"),
+            Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "docs", "domain-terms.md")),
+        };
+
+        var path = candidates.FirstOrDefault(File.Exists);
+        if (path is null)
+        {
+            MessageBox.Show(
+                "Domain Terms help file was not found. Expected docs\\domain-terms.md next to Handy.exe or in the repository docs folder.",
+                "Handy.NET",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return;
+        }
+
+        try
+        {
+            Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(
+                $"Could not open Domain Terms help:\n{ex.Message}",
+                "Handy.NET",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+        }
     }
 
     private static string ComboContent(ComboBox combo, string fallback)

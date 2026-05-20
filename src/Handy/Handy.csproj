@@ -24,6 +24,10 @@
     <PackageReference Include="Whisper.net.Runtime" Version="1.9.0" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Include="..\..\docs\domain-terms.md" Link="docs\domain-terms.md" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
   <!--
     Stamp every build with a git-derived version so the displayed version
     string changes whenever the working tree changes. AssemblyInformationalVersion

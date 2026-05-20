@@ -236,7 +236,7 @@ Useful settings:
 - **Domain terms** in Advanced lets you define canonical business terms,
   mistranscribed variants, required context, blocked context, case sensitivity,
   and notes. Applied rules are logged separately from raw ASR and filler/stutter
-  filtering.
+  filtering. See [`docs/domain-terms.md`](docs/domain-terms.md) for examples.
 - **Vocabulary prompt** in Models uses the enabled glossary canonical terms as
   a Whisper-only recognition prompt.
 - **Background recognition** can be enabled in `settings.json` with
