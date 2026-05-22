@@ -48,6 +48,12 @@ public partial class App : Application
     // non-reentrant) so a still-in-flight speculative pass blocks — not
     // collides with — a cold final pass.
     private readonly SemaphoreSlim _asrGate = new(1, 1);
+
+    // When decoding only the tail (UsePrefixPlusTail), include this much audio
+    // BEFORE the snapshot boundary so a word straddling the splice point is fully
+    // re-decoded; TranscriptSplicer dedups the overlapping words at the join.
+    private const int TailLookbackSamples = 16000 * 4 / 5; // 800 ms at 16 kHz
+
     private CancellationTokenSource? _specCts;
     private long _lastNonSilentTicks;
     private long _lastSpecSnapshotSamples;
@@ -549,9 +555,13 @@ public partial class App : Application
                     }
                     else if (decision == SpeculativeCachePolicy.Decision.UsePrefixPlusTail && cache is not null)
                     {
-                        // Decode just the tail (raw audio after the snapshot point).
-                        var tailRaw = new float[tailRawSamples];
-                        Array.Copy(rawCaptureSamples, snapRawSamples, tailRaw, 0, tailRawSamples);
+                        // Decode the tail with a short lookback into the snapshot
+                        // region so a word straddling the splice point is fully
+                        // captured. TranscriptSplicer dedups the overlap at the join.
+                        var lookbackStart = Math.Max(0, snapRawSamples - TailLookbackSamples);
+                        var tailLen = rawCaptureSamples.Length - lookbackStart;
+                        var tailRaw = new float[tailLen];
+                        Array.Copy(rawCaptureSamples, lookbackStart, tailRaw, 0, tailLen);
                         var tailForAsr = tailRaw;
                         if (_settings.VadEnabled && _vad is not null && _vad.IsReady)
                             tailForAsr = _vad.Trim(tailRaw, _settings.VadThreshold, _settings.VadPaddingMs);
