@@ -1,0 +1,24 @@
+<Project>
+
+  <!--
+    Single source of truth for the application version.
+
+    VersionPrefix is committed here so the build NEVER shells out to git at build
+    time. A deployed source copy with no .git directory (e.g. an unpacked build
+    tree) therefore still reports a real, correct version instead of falling back
+    to a static placeholder.
+
+    The patch component tracks the git commit count and is rewritten by the
+    pre-commit hook (tools/git-hooks/pre-commit), so it advances on every commit.
+    Bump major/minor here by hand for milestones; the hook preserves whatever
+    major.minor it finds and only updates the patch.
+  -->
+  <PropertyGroup>
+    <VersionPrefix>0.1.43</VersionPrefix>
+    <!-- Keep the displayed version clean and identical with or without a .git
+         present: don't let the SDK append the commit SHA to the informational
+         version. -->
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+  </PropertyGroup>
+
+</Project>
