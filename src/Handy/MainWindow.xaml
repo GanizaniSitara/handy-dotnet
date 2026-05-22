@@ -168,6 +168,23 @@
                         </StackPanel>
                     </Border>
 
+                    <TextBlock Text="TRANSCRIPTION" Style="{StaticResource Text.SectionGroupTitle}"/>
+                    <Border Style="{StaticResource SettingsCard}">
+                        <StackPanel>
+                            <Border Style="{StaticResource SettingsRowFirst}">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="Fast transcription (decode during pauses)" Style="{StaticResource Text.SettingLabel}"
+                                               ToolTip="Starts transcribing in the background at natural pauses so the result is ready sooner. Faster, but can occasionally drop a word where the background and final passes are spliced. Turn OFF for maximum accuracy — every dictation is then decoded in a single pass."/>
+                                    <CheckBox  Grid.Column="1" x:Name="BackgroundRecognitionCheck"/>
+                                </Grid>
+                            </Border>
+                        </StackPanel>
+                    </Border>
+
                     <TextBlock Text="VOICE ACTIVITY (VAD)" Style="{StaticResource Text.SectionGroupTitle}"/>
                     <Border Style="{StaticResource SettingsCard}">
                         <StackPanel>

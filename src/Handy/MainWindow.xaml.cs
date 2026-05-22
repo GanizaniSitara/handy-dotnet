@@ -139,6 +139,7 @@ public partial class MainWindow : Window
             TrailingSpaceCheck.IsChecked = _settings.AppendTrailingSpace;
             SelectComboByContent(ClipboardCombo,  _settings.ClipboardHandling);
             AlwaysCopyTranscriptCheck.IsChecked = _settings.AlwaysCopyTranscriptToClipboard;
+            BackgroundRecognitionCheck.IsChecked = _settings.BackgroundRecognitionEnabled;
             SelectComboByContent(AutoSubmitCombo, _settings.AutoSubmitKey);
             _domainCorrections = new ObservableCollection<DomainCorrection>(
                 (_settings.DomainCorrections ?? new List<DomainCorrection>()).Select(c => c.Clone()));
@@ -232,6 +233,7 @@ public partial class MainWindow : Window
         _settings.AppendTrailingSpace = TrailingSpaceCheck.IsChecked == true;
         _settings.ClipboardHandling   = (string?)((ComboBoxItem)ClipboardCombo.SelectedItem)?.Content  ?? "DontModify";
         _settings.AlwaysCopyTranscriptToClipboard = AlwaysCopyTranscriptCheck.IsChecked == true;
+        _settings.BackgroundRecognitionEnabled = BackgroundRecognitionCheck.IsChecked == true;
         _settings.AutoSubmitKey       = (string?)((ComboBoxItem)AutoSubmitCombo.SelectedItem)?.Content ?? "None";
         DomainCorrectionsGrid.CommitEdit(DataGridEditingUnit.Cell, true);
         DomainCorrectionsGrid.CommitEdit(DataGridEditingUnit.Row, true);
