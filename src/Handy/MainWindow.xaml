@@ -287,6 +287,50 @@
                         </StackPanel>
                     </Border>
 
+                    <TextBlock Text="PASTE TIMING" Style="{StaticResource Text.SectionGroupTitle}"/>
+                    <Border Style="{StaticResource SettingsCard}">
+                        <StackPanel>
+                            <Border Style="{StaticResource SettingsRowFirst}">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="80"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="Paste delay (ms)" Style="{StaticResource Text.SettingLabel}"
+                                               ToolTip="Clipboard paste only: wait between setting the clipboard and sending the paste chord. Ignored in Direct mode."/>
+                                    <TextBox   Grid.Column="1" x:Name="PasteDelayBox"/>
+                                </Grid>
+                            </Border>
+                            <Border Style="{StaticResource SettingsRow}">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="80"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="Direct per-char delay — local (ms)" Style="{StaticResource Text.SettingLabel}"
+                                               ToolTip="Per-char throttle for Direct paste into LOCAL apps. 0 = fastest; native desktops handle full speed."/>
+                                    <TextBox   Grid.Column="1" x:Name="DirectCharDelayBox"/>
+                                </Grid>
+                            </Border>
+                            <Border Style="{StaticResource SettingsRow}">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="80"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="Direct per-char delay — Citrix (ms)" Style="{StaticResource Text.SettingLabel}"
+                                               ToolTip="Per-char throttle for Direct paste when the foreground window is a Citrix client (CDViewer / wfica32 / Receiver / Workspace). Citrix forwards keystrokes through its own pipeline and drops or reorders Unicode events at full speed — a few ms here usually fixes garbling. Auto-applied only when a Citrix client is in front."/>
+                                    <TextBox   Grid.Column="1" x:Name="DirectCharDelayCitrixBox"/>
+                                </Grid>
+                            </Border>
+                            <Border Style="{StaticResource SettingsRow}">
+                                <TextBlock Style="{StaticResource Text.Hint}">
+                                    Paste delay applies to clipboard paste modes; the per-char delays apply to Direct mode. The Citrix delay is auto-selected only when a known Citrix client is the foreground window.
+                                </TextBlock>
+                            </Border>
+                        </StackPanel>
+                    </Border>
+
                     <DockPanel Margin="14,18,14,6">
                         <Button DockPanel.Dock="Right"
                                 Style="{StaticResource SecondaryButton}"
@@ -351,16 +395,6 @@
                                         <ColumnDefinition Width="*"/>
                                         <ColumnDefinition Width="80"/>
                                     </Grid.ColumnDefinitions>
-                                    <TextBlock Grid.Column="0" Text="Paste delay (ms)" Style="{StaticResource Text.SettingLabel}"/>
-                                    <TextBox   Grid.Column="1" x:Name="PasteDelayBox"/>
-                                </Grid>
-                            </Border>
-                            <Border Style="{StaticResource SettingsRow}">
-                                <Grid>
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="*"/>
-                                        <ColumnDefinition Width="80"/>
-                                    </Grid.ColumnDefinitions>
                                     <TextBlock Grid.Column="0" Text="Pre-roll (ms)" Style="{StaticResource Text.SettingLabel}"
                                                ToolTip="Include this many ms of audio captured BEFORE the hotkey press."/>
                                     <TextBox   Grid.Column="1" x:Name="PreRollBox"/>
@@ -376,39 +410,6 @@
                                                ToolTip="Keep recording this many ms AFTER the key is released."/>
                                     <TextBox   Grid.Column="1" x:Name="PostRollBox"/>
                                 </Grid>
-                            </Border>
-                            <Border Style="{StaticResource SettingsRow}">
-                                <Grid>
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="*"/>
-                                        <ColumnDefinition Width="80"/>
-                                    </Grid.ColumnDefinitions>
-                                    <TextBlock Grid.Column="0" Text="Direct per-char delay (ms)" Style="{StaticResource Text.SettingLabel}"
-                                               ToolTip="Per-char throttle for Direct paste into LOCAL apps. 0 = fastest; native desktops handle full speed. Citrix gets its own delay in the CITRIX section below."/>
-                                    <TextBox   Grid.Column="1" x:Name="DirectCharDelayBox"/>
-                                </Grid>
-                            </Border>
-                        </StackPanel>
-                    </Border>
-
-                    <TextBlock Text="CITRIX" Style="{StaticResource Text.SectionGroupTitle}"/>
-                    <Border Style="{StaticResource SettingsCard}">
-                        <StackPanel>
-                            <Border Style="{StaticResource SettingsRowFirst}">
-                                <Grid>
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="*"/>
-                                        <ColumnDefinition Width="80"/>
-                                    </Grid.ColumnDefinitions>
-                                    <TextBlock Grid.Column="0" Text="Direct per-char delay (ms)" Style="{StaticResource Text.SettingLabel}"
-                                               ToolTip="Per-char throttle for Direct paste when the foreground window is a Citrix client (CDViewer / wfica32 / Receiver / Workspace). Citrix forwards keystrokes through its own pipeline and drops or reorders Unicode events at full speed — a few ms here usually fixes garbling. Default 1."/>
-                                    <TextBox   Grid.Column="1" x:Name="DirectCharDelayCitrixBox"/>
-                                </Grid>
-                            </Border>
-                            <Border Style="{StaticResource SettingsRow}">
-                                <TextBlock Style="{StaticResource Text.Hint}">
-                                    Citrix detection auto-picks this delay only when the foreground process is a known Citrix client. Local apps keep the fast path above.
-                                </TextBlock>
                             </Border>
                         </StackPanel>
                     </Border>

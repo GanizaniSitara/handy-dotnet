@@ -240,10 +240,21 @@ static void AssertSpeculativeCachePolicy()
         SpeculativeCachePolicy.Decide(finalRawSampleCount: 128_000, snapshotRawSampleCount: 96_000, tailVadSampleCount: 32_000, s),
         "spec policy: voiced tail -> prefix + tail");
 
-    // Tail raw is long but VAD trimmed to <250 ms of speech -> prefix only.
+    // Tail VAD output is below the silence floor (<=100 ms) -> treat as silence, prefix only.
     AssertEqual(SpeculativeCachePolicy.Decision.UsePrefixOnly,
         SpeculativeCachePolicy.Decide(finalRawSampleCount: 128_000, snapshotRawSampleCount: 96_000, tailVadSampleCount: 1_000, s),
-        "spec policy: tail too short after VAD -> prefix only");
+        "spec policy: sub-floor tail -> prefix only");
+
+    // Tail has real speech but is short (250 ms of voiced VAD) -> cold pass, never dropped.
+    // This is the bug fix: previously this final phrase was discarded as "too short".
+    AssertEqual(SpeculativeCachePolicy.Decision.ColdPass,
+        SpeculativeCachePolicy.Decide(finalRawSampleCount: 128_000, snapshotRawSampleCount: 96_000, tailVadSampleCount: 4_000, s),
+        "spec policy: short real tail -> cold pass (not dropped)");
+
+    // Just below the reliable-tail threshold (~480 ms voiced) -> still cold pass, not dropped.
+    AssertEqual(SpeculativeCachePolicy.Decision.ColdPass,
+        SpeculativeCachePolicy.Decide(finalRawSampleCount: 160_000, snapshotRawSampleCount: 96_000, tailVadSampleCount: 7_900, s),
+        "spec policy: sub-reliable real tail -> cold pass");
 
     // No snapshot at all -> cold pass.
     AssertEqual(SpeculativeCachePolicy.Decision.ColdPass,
