@@ -285,6 +285,27 @@ static void AssertTranscriptSplicer()
         combined,
         new[] { Rule("service now", "ServiceNow") });
     AssertEqual("Please open ServiceNow ticket.", corrected.Text, "splicer: corrections see boundary phrase");
+
+    // Lookback overlap: the tail re-decodes a few words from the end of the
+    // prefix; the duplicated run is dropped, not doubled.
+    AssertEqual("I was going to the shop now",
+        TranscriptSplicer.Combine("I was going to the", "going to the shop now"),
+        "splicer: dedups overlapping word run");
+
+    // Casing and punctuation differences between the two decodes don't defeat it.
+    AssertEqual("open Service Now please",
+        TranscriptSplicer.Combine("open Service Now", "service now, please"),
+        "splicer: overlap match ignores case and punctuation");
+
+    // A genuine repeated word is preserved (only the matched overlap is removed).
+    AssertEqual("I think I think so",
+        TranscriptSplicer.Combine("I think I", "I think so"),
+        "splicer: legitimate repeat preserved");
+
+    // No coincidental merge when there is no real overlap.
+    AssertEqual("the cat sat on the mat",
+        TranscriptSplicer.Combine("the cat sat", "on the mat"),
+        "splicer: no false merge without overlap");
 }
 
 internal sealed record TestCase(
