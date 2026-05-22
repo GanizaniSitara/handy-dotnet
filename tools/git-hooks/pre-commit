@@ -1,0 +1,29 @@
+#!/bin/sh
+# Stamp the VersionPrefix patch component = git commit count into the repo-root
+# Directory.Build.props, so the application version advances on every commit and
+# is baked into the source tree for builds that have no .git (e.g. a deployed
+# copy). The existing major.minor is preserved; only the patch is updated.
+#
+# Install (once, on a dev clone):
+#   cp tools/git-hooks/pre-commit .git/hooks/pre-commit
+#   chmod +x .git/hooks/pre-commit
+set -e
+
+repo_root=$(git rev-parse --show-toplevel)
+props="$repo_root/Directory.Build.props"
+[ -f "$props" ] || exit 0
+
+# The commit being created will be (current HEAD count + 1).
+count=$(git rev-list --count HEAD 2>/dev/null || echo 0)
+patch=$((count + 1))
+
+current=$(grep -o '<VersionPrefix>[^<]*</VersionPrefix>' "$props" | sed 's/<[^>]*>//g' | head -n1)
+major_minor=$(printf '%s' "$current" | cut -d. -f1,2)
+[ -n "$major_minor" ] || major_minor="0.1"
+version="$major_minor.$patch"
+
+if [ "$current" != "$version" ]; then
+  sed "s#<VersionPrefix>[^<]*</VersionPrefix>#<VersionPrefix>$version</VersionPrefix>#" "$props" > "$props.tmp"
+  mv "$props.tmp" "$props"
+  git add "$props"
+fi
