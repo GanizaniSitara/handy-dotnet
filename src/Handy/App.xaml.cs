@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Interop;
 using System.Windows.Media;
+using System.Windows.Threading;
 using Handy.Services;
 
 namespace Handy;
@@ -32,6 +33,7 @@ public partial class App : Application
     private bool _recording;
     private bool _cancelled;
     private bool _transcribing;
+    private int _shutdownCleanupStarted;
 
     // Per-dictation diagnostics. Captured in StartRecording, finalised at the
     // end of StopAndTranscribe into a single greppable INFO line. The whole
@@ -81,8 +83,10 @@ public partial class App : Application
 
     private void OnStartup(object sender, StartupEventArgs e)
     {
-        AppDomain.CurrentDomain.UnhandledException += (_, ex) =>
-            Log.Error($"Unhandled: {ex.ExceptionObject}");
+        AppDomain.CurrentDomain.UnhandledException += OnUnhandledException;
+        AppDomain.CurrentDomain.ProcessExit += OnProcessExit;
+        DispatcherUnhandledException += OnDispatcherUnhandledException;
+        SessionEnding += OnSessionEnding;
 
         _dataDir = ResolveDataDir(e.Args);
         Directory.CreateDirectory(_dataDir);
@@ -202,7 +206,42 @@ public partial class App : Application
 
     private void OnExit(object sender, ExitEventArgs e)
     {
-        try { _settings.Save(); } catch { /* best-effort */ }
+        DisposeForShutdown(saveSettings: true);
+    }
+
+    private void OnUnhandledException(object sender, UnhandledExceptionEventArgs e)
+    {
+        Log.Error($"Unhandled: {e.ExceptionObject}");
+        DisposeForShutdown(saveSettings: false);
+    }
+
+    private void OnDispatcherUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs e)
+    {
+        Log.Error($"Dispatcher unhandled: {e.Exception}");
+        DisposeForShutdown(saveSettings: false);
+    }
+
+    private void OnProcessExit(object? sender, EventArgs e)
+    {
+        DisposeForShutdown(saveSettings: false);
+    }
+
+    private void OnSessionEnding(object sender, SessionEndingCancelEventArgs e)
+    {
+        Log.Info("Windows session ending; disposing tray icon.");
+        DisposeForShutdown(saveSettings: true);
+    }
+
+    private void DisposeForShutdown(bool saveSettings)
+    {
+        if (Interlocked.Exchange(ref _shutdownCleanupStarted, 1) != 0)
+            return;
+
+        if (saveSettings)
+        {
+            try { _settings.Save(); } catch { /* best-effort */ }
+        }
+
         SingleInstance.OnSignal -= HandleSignal;
         SingleInstance.Shutdown();
         try { _specCts?.Cancel(); } catch { }

@@ -14,17 +14,21 @@ namespace Handy.Services;
 /// </summary>
 public sealed class TrayIconManager : IDisposable
 {
+    private static readonly Guid TrayIconGuid = new("8F38F0A5-D738-40B6-9BE5-740ACD9A7C73");
+
     // Same palette as the recording overlay so tray + overlay match visually.
     private static readonly WMedia.Color IdleColor         = WMedia.Color.FromRgb(0x58, 0x93, 0xDA); // blue
     private static readonly WMedia.Color RecordingColor    = WMedia.Color.FromRgb(0xE0, 0x40, 0x3D); // red
     private static readonly WMedia.Color TranscribingColor = WMedia.Color.FromRgb(0x43, 0xA0, 0x47); // green
 
-    private readonly NotifyIcon _icon;
+    private readonly GuidTrayIcon _icon;
+    private readonly ContextMenuStrip _menu;
     private readonly ToolStripMenuItem _statusItem;
     private readonly ToolStripMenuItem _cancelItem;
 
     private System.Drawing.Icon? _currentIcon;
     private State _state = State.Idle;
+    private bool _disposed;
 
     public TrayIconManager(
         Action onOpenSettings,
@@ -39,36 +43,33 @@ public sealed class TrayIconManager : IDisposable
             Enabled = false,
         };
 
-        var menu = new ContextMenuStrip();
-        menu.Items.Add(_statusItem);
-        menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add("Settings",              null, (_, _) => onOpenSettings());
-        menu.Items.Add("Copy last transcript",  null, (_, _) => onCopyLast());
-        menu.Items.Add("History…",              null, (_, _) => onOpenHistory());
-        menu.Items.Add(_cancelItem);
-        menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add("Exit", null, (_, _) => onExit());
+        _menu = new ContextMenuStrip();
+        _menu.Items.Add(_statusItem);
+        _menu.Items.Add(new ToolStripSeparator());
+        _menu.Items.Add("Settings",              null, (_, _) => onOpenSettings());
+        _menu.Items.Add("Copy last transcript",  null, (_, _) => onCopyLast());
+        _menu.Items.Add("History…",              null, (_, _) => onOpenHistory());
+        _menu.Items.Add(_cancelItem);
+        _menu.Items.Add(new ToolStripSeparator());
+        _menu.Items.Add("Exit", null, (_, _) => onExit());
 
         _currentIcon = IconAssets.RenderHandTrayIcon(IdleColor);
-        _icon = new NotifyIcon
-        {
-            Icon = _currentIcon,
-            Text = "Handy.NET — press hotkey to dictate",
-            Visible = true,
-            ContextMenuStrip = menu,
-        };
+        _icon = new GuidTrayIcon(
+            TrayIconGuid,
+            _currentIcon,
+            "Handy.NET — press hotkey to dictate");
+
         // Convention: single left-click opens settings; right-click shows the
-        // context menu (handled automatically by ContextMenuStrip).
-        _icon.MouseClick += (_, e) =>
-        {
-            if (e.Button == MouseButtons.Left) onOpenSettings();
-        };
+        // context menu.
+        _icon.LeftClick += (_, _) => onOpenSettings();
+        _icon.RightClick += (_, _) => _icon.ShowContextMenu(_menu);
     }
 
     public enum State { Idle, Recording, Transcribing }
 
     public void SetState(State state)
     {
+        if (_disposed) return;
         if (state == _state) return;
         _state = state;
 
@@ -99,7 +100,7 @@ public sealed class TrayIconManager : IDisposable
 
         SwapIcon(IconAssets.RenderHandTrayIcon(color));
         _statusItem.Text = status;
-        _icon.Text = tooltip;
+        _icon.UpdateTooltip(tooltip);
         _cancelItem.Enabled = cancelEnabled;
     }
 
@@ -108,17 +109,16 @@ public sealed class TrayIconManager : IDisposable
 
     public void Notify(string title, string body)
     {
-        _icon.BalloonTipTitle = title;
-        _icon.BalloonTipText = body;
-        _icon.ShowBalloonTip(3000);
+        if (_disposed) return;
+        _icon.ShowBalloon(title, body);
     }
 
     private void SwapIcon(System.Drawing.Icon next)
     {
         var prev = _currentIcon;
         _currentIcon = next;
-        _icon.Icon = next;
-        // NotifyIcon does not own its icons; dispose the previous one ourselves
+        _icon.UpdateIcon(next);
+        // GuidTrayIcon does not own its icons; dispose the previous one ourselves
         // to release the underlying GDI handle. Without this, every state
         // transition leaks an HICON.
         prev?.Dispose();
@@ -126,8 +126,11 @@ public sealed class TrayIconManager : IDisposable
 
     public void Dispose()
     {
-        _icon.Visible = false;
+        if (_disposed) return;
+        _disposed = true;
+
         _icon.Dispose();
+        _menu.Dispose();
         _currentIcon?.Dispose();
         _currentIcon = null;
     }
