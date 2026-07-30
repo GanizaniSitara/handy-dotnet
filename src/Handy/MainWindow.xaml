@@ -84,6 +84,33 @@
                                         <ColumnDefinition Width="*"/>
                                         <ColumnDefinition Width="240"/>
                                     </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="Capture task shortcut"
+                                               Style="{StaticResource Text.SettingLabel}"
+                                               ToolTip="Transcribe into the inbox folder without pasting into the active application."/>
+                                    <TextBox Grid.Column="1" x:Name="TaskCaptureHotkeyBox"
+                                             KeyDown="OnTaskCaptureHotkeyBoxKeyDown"
+                                             IsReadOnly="True" Focusable="True"
+                                             ToolTip="Click, then press the desired combination."/>
+                                </Grid>
+                            </Border>
+                            <Border Style="{StaticResource SettingsRow}">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="360"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="Inbox folder"
+                                               Style="{StaticResource Text.SettingLabel}"/>
+                                    <TextBox Grid.Column="1" x:Name="TaskCaptureInboxBox"
+                                             ToolTip="Task captures are atomically queued here. Whatever reads the folder may be stopped; files wait safely."/>
+                                </Grid>
+                            </Border>
+                            <Border Style="{StaticResource SettingsRow}">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="240"/>
+                                    </Grid.ColumnDefinitions>
                                     <TextBlock Grid.Column="0" Text="Cancel shortcut" Style="{StaticResource Text.SettingLabel}"/>
                                     <TextBox   Grid.Column="1" x:Name="CancelBox" KeyDown="OnCancelBoxKeyDown"
                                                IsReadOnly="True" Focusable="True"/>
