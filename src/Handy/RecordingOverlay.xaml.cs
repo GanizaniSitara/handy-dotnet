@@ -3,6 +3,7 @@ using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Interop;
 using System.Windows.Media;
+using System.Windows.Threading;
 using Handy.PInvoke;
 
 namespace Handy;
@@ -43,8 +44,16 @@ public partial class RecordingOverlay : Window
         };
     }
 
+    private static readonly Brush IdleBackground    = new SolidColorBrush(Color.FromArgb(0xCC, 0x11, 0x11, 0x11));
+    private static readonly Brush SuccessBackground = new SolidColorBrush(Color.FromArgb(0xCC, 0x14, 0x53, 0x2D));
+    private static readonly Brush FailureBackground = new SolidColorBrush(Color.FromArgb(0xCC, 0x7F, 0x1D, 0x1D));
+
+    private DispatcherTimer? _flashTimer;
+
     public void SetState(State state)
     {
+        CancelFlash();
+        Shell.Background = IdleBackground;
         switch (state)
         {
             case State.Transcribing:
@@ -57,6 +66,42 @@ public partial class RecordingOverlay : Window
                 ResetBars();
                 break;
         }
+    }
+
+    /// <summary>
+    /// Briefly reuse the recording pill to confirm an outcome that produced no
+    /// visible paste — a task capture lands in a folder, so without this the
+    /// dictation appears to vanish. Auto-hides; safe to call from any thread.
+    /// </summary>
+    public void Flash(string text, bool success, TimeSpan duration)
+    {
+        if (!Dispatcher.CheckAccess())
+        {
+            Dispatcher.BeginInvoke(new Action(() => Flash(text, success, duration)));
+            return;
+        }
+
+        CancelFlash();
+        StateLabel.Text = text;
+        LevelBars.Visibility = Visibility.Collapsed;
+        Shell.Background = success ? SuccessBackground : FailureBackground;
+        Show();
+
+        _flashTimer = new DispatcherTimer { Interval = duration };
+        _flashTimer.Tick += (_, _) =>
+        {
+            CancelFlash();
+            Shell.Background = IdleBackground;
+            Hide();
+        };
+        _flashTimer.Start();
+    }
+
+    private void CancelFlash()
+    {
+        if (_flashTimer is null) return;
+        _flashTimer.Stop();
+        _flashTimer = null;
     }
 
     private const double BarMaxHeight = 18;

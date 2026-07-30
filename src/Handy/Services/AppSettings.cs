@@ -13,12 +13,20 @@ namespace Handy.Services;
 /// </summary>
 public sealed class AppSettings
 {
-    private const int CurrentSettingsVersion = 2;
+    private const int CurrentSettingsVersion = 3;
 
     public int SettingsVersion { get; set; } = CurrentSettingsVersion;
 
-    public string Hotkey { get; set; } = "Ctrl+Alt+Space";
+    public string Hotkey { get; set; } = "Ctrl+Space";
     public string CancelHotkey { get; set; } = "Escape";
+
+    /// <summary>Capture a dictated task into the durable inbox folder
+    /// without pasting into the foreground application.</summary>
+    public string TaskCaptureHotkey { get; set; } = "Ctrl+Alt+Space";
+
+    /// <summary>Where task captures are queued. Environment variables are expanded,
+    /// so the folder can point at whatever process consumes the queue.</summary>
+    public string TaskCaptureInbox { get; set; } = @"%LOCALAPPDATA%\Handy\task-inbox";
 
     /// <summary>Recovery hotkey: copies the most recent transcription back onto the clipboard
     /// without triggering paste. Useful when the auto-paste failed silently (e.g. terminal
@@ -171,12 +179,14 @@ public sealed class AppSettings
         var path = Path.Combine(dataDir, "settings.json");
         AppSettings s;
         bool hasSettingsVersion = false;
+        bool hasTaskCaptureHotkey = false;
         if (File.Exists(path))
         {
             try
             {
                 var json = File.ReadAllText(path);
                 hasSettingsVersion = HasJsonProperty(json, "settingsVersion");
+                hasTaskCaptureHotkey = HasJsonProperty(json, "taskCaptureHotkey");
                 s = JsonSerializer.Deserialize<AppSettings>(json, JsonOpts) ?? new AppSettings();
             }
             catch (Exception ex)
@@ -190,7 +200,7 @@ public sealed class AppSettings
             s = new AppSettings();
         }
         s.FilePath = path;
-        if (ApplyMigrations(s, dataDir, hasSettingsVersion))
+        if (ApplyMigrations(s, dataDir, hasSettingsVersion, hasTaskCaptureHotkey))
             s.Save();
         return s;
     }
@@ -209,11 +219,27 @@ public sealed class AppSettings
         }
     }
 
-    private static bool ApplyMigrations(AppSettings s, string dataDir, bool hasSettingsVersion)
+    private static bool ApplyMigrations(
+        AppSettings s,
+        string dataDir,
+        bool hasSettingsVersion,
+        bool hasTaskCaptureHotkey)
     {
         var migrated = false;
 
         s.DomainCorrections ??= new List<DomainCorrection>();
+
+        if (!hasTaskCaptureHotkey &&
+            string.Equals(s.Hotkey, "Ctrl+Alt+Space", StringComparison.OrdinalIgnoreCase))
+        {
+            // Ctrl+Alt+Space becomes the dedicated intake chord. Existing installs
+            // that still had the old default move ordinary dictation to Ctrl+Space;
+            // custom chords are left untouched.
+            s.Hotkey = "Ctrl+Space";
+            s.TaskCaptureHotkey = "Ctrl+Alt+Space";
+            migrated = true;
+            Log.Info("Settings migration: transcribe Ctrl+Space; task capture Ctrl+Alt+Space.");
+        }
 
         if (!hasSettingsVersion)
         {

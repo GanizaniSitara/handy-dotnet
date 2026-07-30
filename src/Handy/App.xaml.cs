@@ -34,6 +34,16 @@ public partial class App : Application
     private bool _cancelled;
     private bool _transcribing;
     private int _shutdownCleanupStarted;
+    private CaptureDestination _captureDestination = CaptureDestination.Paste;
+    private DateTimeOffset _captureStartedAtUtc;
+    private ForegroundWindowSnapshot _captureForeground =
+        new(0, string.Empty, 0, string.Empty, string.Empty);
+
+    private enum CaptureDestination
+    {
+        Paste,
+        TaskIntake,
+    }
 
     // Per-dictation diagnostics. Captured in StartRecording, finalised at the
     // end of StopAndTranscribe into a single greppable INFO line. The whole
@@ -185,11 +195,13 @@ public partial class App : Application
         _hook = new LowLevelKeyHookService();
         _hook.Configure(
             Hotkey.Parse(_settings.Hotkey),
+            Hotkey.Parse(_settings.TaskCaptureHotkey),
             Hotkey.Parse(_settings.CancelHotkey),
             Hotkey.Parse(_settings.CopyLastHotkey));
-        _hook.OnTrigger  += OnTrigger;
-        _hook.OnCancel   += OnCancel;
-        _hook.OnCopyLast += CopyLastTranscript;
+        _hook.OnTrigger     += OnTrigger;
+        _hook.OnTaskCapture += OnTaskCapture;
+        _hook.OnCancel      += OnCancel;
+        _hook.OnCopyLast    += CopyLastTranscript;
         _hook.Install();
 
         // Listen for CLI-forwarded signals from the single-instance gate.
@@ -265,6 +277,7 @@ public partial class App : Application
         ReloadTranscriptionServiceIfNeeded();
         _hook?.Configure(
             Hotkey.Parse(_settings.Hotkey),
+            Hotkey.Parse(_settings.TaskCaptureHotkey),
             Hotkey.Parse(_settings.CancelHotkey),
             Hotkey.Parse(_settings.CopyLastHotkey));
         AutostartService.Apply(_settings.Autostart);
@@ -291,6 +304,27 @@ public partial class App : Application
         _overlay.SetState(state);
     }
 
+    // A task capture pastes nothing, so the pill is the only place the user
+    // finds out whether the transcript actually reached the inbox.
+    private static readonly TimeSpan OverlayFlashDuration = TimeSpan.FromMilliseconds(1400);
+
+    private void FlashOverlay(string text, bool success)
+    {
+        if (_overlay is null) return;
+        if (string.Equals(_settings.OverlayPosition, "None", StringComparison.OrdinalIgnoreCase))
+            return;
+
+        void Apply()
+        {
+            _overlay.Flash(text, success, OverlayFlashDuration);
+            // Position after Show so ActualWidth reflects the new label.
+            Dispatcher.BeginInvoke(new Action(() => _overlay.ApplyPosition(_settings.OverlayPosition)));
+        }
+
+        if (Dispatcher.CheckAccess()) Apply();
+        else Dispatcher.Invoke(Apply);
+    }
+
     private void ShowSettings()
     {
         if (_settingsWindow is null) return;
@@ -314,23 +348,39 @@ public partial class App : Application
     }
 
     private void OnTrigger(bool pressed)
+        => HandleCaptureTrigger(pressed, CaptureDestination.Paste);
+
+    private void OnTaskCapture(bool pressed)
+        => HandleCaptureTrigger(pressed, CaptureDestination.TaskIntake);
+
+    private void HandleCaptureTrigger(bool pressed, CaptureDestination destination)
     {
         if (_audio is null || _asr is null || _injector is null) return;
 
         if (_settings.PushToTalk)
         {
-            if (pressed && !_recording) StartRecording();
-            else if (!pressed && _recording) StopAndTranscribe();
+            if (pressed && !_recording) StartRecording(destination);
+            else if (!pressed && _recording && _captureDestination == destination) StopAndTranscribe();
             return;
         }
 
         // Toggle mode fires on press only; ignore release.
         if (!pressed) return;
-        if (!_recording) StartRecording();
-        else             StopAndTranscribe();
+        if (!_recording)
+        {
+            StartRecording(destination);
+        }
+        else if (_captureDestination == destination)
+        {
+            StopAndTranscribe();
+        }
+        else
+        {
+            Log.Warn($"Ignored {destination} hotkey while {_captureDestination} recording is active.");
+        }
     }
 
-    private void StartRecording()
+    private void StartRecording(CaptureDestination destination)
     {
         if (_asr is null || !_asr.IsReady)
         {
@@ -340,13 +390,16 @@ public partial class App : Application
         }
         _recording = true;
         _cancelled = false;
+        _captureDestination = destination;
+        _captureStartedAtUtc = DateTimeOffset.UtcNow;
+        _captureForeground = ForegroundWindowSnapshot.Capture();
         _recStartTicks = Stopwatch.GetTimestamp();
         ResetSpeculativeState();
         _tray?.SetState(Services.TrayIconManager.State.Recording);
         ShowOverlay(RecordingOverlay.State.Recording);
         _feedback?.PlayStart();
         _audio!.Start(_settings.PreRollMs);
-        Log.Info($"Recording started (pre-roll {_settings.PreRollMs} ms).");
+        Log.Info($"Recording started destination={destination} (pre-roll {_settings.PreRollMs} ms).");
     }
 
     private void ResetSpeculativeState()
@@ -455,6 +508,9 @@ public partial class App : Application
     private async void StopAndTranscribe()
     {
         _recording = false;
+        var captureDestination = _captureDestination;
+        var captureStartedAtUtc = _captureStartedAtUtc;
+        var captureForeground = _captureForeground;
         var startTicks = _recStartTicks;
         var sw = Stopwatch.StartNew();
 
@@ -652,28 +708,51 @@ public partial class App : Application
                 _history?.Add(text);
                 historySw.Stop();
                 historyMs = historySw.ElapsedMilliseconds;
-                Log.Info("Flow: after history.Add, before paste");
+                Log.Info($"Flow: after history.Add, before {captureDestination}");
                 var pasteSw = Stopwatch.StartNew();
-                try
+                if (captureDestination == CaptureDestination.TaskIntake)
                 {
-                    _injector!.Paste(text, _settings);
-                    pasteOk = true;
+                    pasteMethod = "TaskIntake";
+                    try
+                    {
+                        var captured = TaskCaptureWriter.Write(
+                            _settings.TaskCaptureInbox,
+                            raw ?? string.Empty,
+                            text,
+                            captureStartedAtUtc,
+                            captureForeground);
+                        pasteOk = true;
+                        outcome = "taskCaptured";
+                        Log.Info($"Task capture: id={captured.CaptureId} path=\"{captured.Path}\"");
+                    }
+                    catch (Exception captureEx)
+                    {
+                        Log.Error($"Task capture write failed: {captureEx}");
+                        outcome = "taskCaptureWriteFailed";
+                        CopyTextToClipboard(text, "task-capture-fallback");
+                        _tray?.Notify("Handy.NET", "Task capture failed — transcript copied.");
+                    }
                 }
-                catch (Exception pex)
+                else
                 {
-                    Log.Error($"Paste threw: {pex.Message}");
-                    outcome = "pasteThrew";
+                    try
+                    {
+                        _injector!.Paste(text, _settings);
+                        pasteOk = true;
+                    }
+                    catch (Exception pex)
+                    {
+                        Log.Error($"Paste threw: {pex.Message}");
+                        outcome = "pasteThrew";
+                    }
+                    var copySw = Stopwatch.StartNew();
+                    CopyTranscriptToClipboardIfEnabled(text);
+                    copySw.Stop();
+                    copyMs = copySw.ElapsedMilliseconds;
                 }
-                finally
-                {
-                    pasteSw.Stop();
-                    pasteMs = pasteSw.ElapsedMilliseconds;
-                }
-                var copySw = Stopwatch.StartNew();
-                CopyTranscriptToClipboardIfEnabled(text);
-                copySw.Stop();
-                copyMs = copySw.ElapsedMilliseconds;
-                Log.Info("Flow: after paste");
+                pasteSw.Stop();
+                pasteMs = pasteSw.ElapsedMilliseconds;
+                Log.Info($"Flow: after {captureDestination}");
             }
             else
             {
@@ -690,6 +769,11 @@ public partial class App : Application
         {
             _transcribing = false;
             SetUiState(isRecording: false, isTranscribing: false, hideOverlay: true);
+            // After the hide, so the flash owns the pill until its own timer.
+            if (outcome == "taskCaptured")
+                FlashOverlay("Task captured", success: true);
+            else if (outcome == "taskCaptureWriteFailed")
+                FlashOverlay("Capture failed — copied", success: false);
             // Cancel any in-flight speculative work so it doesn't write to
             // _specCache after this dictation ends and accidentally get reused
             // on the next one with stale audio.
@@ -845,6 +929,20 @@ public partial class App : Application
         catch (Exception ex)
         {
             Log.Warn($"always-copy-transcription: clipboard set failed: {ex.Message}");
+        }
+    }
+
+    private void CopyTextToClipboard(string text, string logPrefix)
+    {
+        try
+        {
+            if (Dispatcher.CheckAccess()) Clipboard.SetText(text);
+            else Dispatcher.Invoke(() => Clipboard.SetText(text));
+            Log.Info($"{logPrefix}: {text.Length} chars to clipboard");
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"{logPrefix}: clipboard set failed: {ex.Message}");
         }
     }
 

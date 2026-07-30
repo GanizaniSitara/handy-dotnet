@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text.Json;
 using Handy.Services;
 
 var tests = new[]
@@ -124,8 +125,10 @@ AssertDisabledRulePersists();
 AssertWhisperVocabularyPromptBuilder();
 AssertSpeculativeCachePolicy();
 AssertTranscriptSplicer();
+AssertTaskCaptureSettingsMigration();
+AssertTaskCaptureWriter();
 
-Console.WriteLine($"Domain correction fixture passed ({tests.Length} correction cases plus settings, prompt-builder, speculative, and splicer checks).");
+Console.WriteLine($"Handy fixture passed ({tests.Length} correction cases plus settings, prompt-builder, speculative, splicer, and task-capture checks).");
 
 static DomainCorrection Rule(
     string from,
@@ -163,6 +166,8 @@ static void AssertDisabledRulePersists()
     try
     {
         var settings = AppSettings.Load(dir);
+        settings.TaskCaptureHotkey = "Ctrl+Alt+T";
+        settings.TaskCaptureInbox = Path.Combine(dir, "task-inbox");
         settings.AlwaysCopyTranscriptToClipboard = true;
         settings.WhisperVocabularyPromptEnabled = true;
         settings.WhisperCarryInitialPrompt = false;
@@ -181,6 +186,8 @@ static void AssertDisabledRulePersists()
         settings.Save();
 
         var reloaded = AppSettings.Load(dir);
+        AssertEqual("Ctrl+Alt+T", reloaded.TaskCaptureHotkey, "settings round-trip: task capture hotkey");
+        AssertEqual(Path.Combine(dir, "task-inbox"), reloaded.TaskCaptureInbox, "settings round-trip: task capture inbox");
         AssertEqual(true, reloaded.AlwaysCopyTranscriptToClipboard, "settings round-trip: always-copy clipboard");
         AssertEqual(1, reloaded.DomainCorrections.Count, "settings round-trip: rule count");
         var rule = reloaded.DomainCorrections[0];
@@ -194,6 +201,72 @@ static void AssertDisabledRulePersists()
         AssertEqual("weather", string.Join("; ", rule.BlockedContext), "settings round-trip: blocked context");
         AssertEqual(true, rule.CaseSensitive, "settings round-trip: case sensitivity");
         AssertEqual("ITSM product", rule.Notes, "settings round-trip: notes");
+    }
+    finally
+    {
+        try { Directory.Delete(dir, recursive: true); } catch { }
+    }
+}
+
+static void AssertTaskCaptureSettingsMigration()
+{
+    var dir = Path.Combine(Path.GetTempPath(), "Handy.Tests", Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(dir);
+    try
+    {
+        File.WriteAllText(
+            Path.Combine(dir, "settings.json"),
+            """
+            {
+              "settingsVersion": 2,
+              "hotkey": "Ctrl+Alt+Space",
+              "cancelHotkey": "Escape"
+            }
+            """);
+
+        var migrated = AppSettings.Load(dir);
+
+        AssertEqual(3, migrated.SettingsVersion, "task capture migration: settings version");
+        AssertEqual("Ctrl+Space", migrated.Hotkey, "task capture migration: ordinary hotkey");
+        AssertEqual("Ctrl+Alt+Space", migrated.TaskCaptureHotkey, "task capture migration: intake hotkey");
+    }
+    finally
+    {
+        try { Directory.Delete(dir, recursive: true); } catch { }
+    }
+}
+
+static void AssertTaskCaptureWriter()
+{
+    var dir = Path.Combine(Path.GetTempPath(), "Handy.Tests", Guid.NewGuid().ToString("N"));
+    var inbox = Path.Combine(dir, "inbox");
+    try
+    {
+        var foreground = new ForegroundWindowSnapshot(
+            123,
+            "codex",
+            456,
+            "ConsoleWindowClass",
+            "Command Prompt");
+        var started = new DateTimeOffset(2026, 7, 30, 10, 0, 0, TimeSpan.Zero);
+
+        var result = TaskCaptureWriter.Write(
+            inbox,
+            "raw dictated task",
+            "Dictated task",
+            started,
+            foreground);
+
+        AssertEqual(true, File.Exists(result.Path), "task capture writer: final file exists");
+        AssertEqual(0, Directory.GetFiles(inbox, "*.tmp").Length, "task capture writer: no temporary files");
+        using var doc = JsonDocument.Parse(File.ReadAllText(result.Path));
+        var root = doc.RootElement;
+        AssertEqual(1, root.GetProperty("schema_version").GetInt32(), "task capture writer: schema");
+        AssertEqual(result.CaptureId, root.GetProperty("capture_id").GetString(), "task capture writer: capture id");
+        AssertEqual("raw dictated task", root.GetProperty("raw_transcript").GetString(), "task capture writer: raw");
+        AssertEqual("Dictated task", root.GetProperty("transcript").GetString(), "task capture writer: transcript");
+        AssertEqual(123, root.GetProperty("foreground").GetProperty("pid").GetInt32(), "task capture writer: foreground pid");
+        AssertEqual("task-inbox", root.GetProperty("destination").GetString(), "task capture writer: destination");
     }
     finally
     {

@@ -20,3 +20,6 @@ settings.json
 history.json
 last-transcript.txt
 models/
+
+# Isolated build output used when the live Handy.exe locks bin/obj
+.artifacts/
