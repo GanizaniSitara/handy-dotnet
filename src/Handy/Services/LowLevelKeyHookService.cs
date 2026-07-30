@@ -15,7 +15,8 @@ namespace Handy.Services;
 /// </summary>
 public sealed class LowLevelKeyHookService : IDisposable
 {
-    public event Action<bool>? OnTrigger;   // true = pressed, false = released
+    public event Action<bool>? OnTrigger;       // true = pressed, false = released
+    public event Action<bool>? OnTaskCapture;
     public event Action?       OnCancel;
     public event Action?       OnCopyLast;
 
@@ -34,9 +35,11 @@ public sealed class LowLevelKeyHookService : IDisposable
     private IntPtr _hook;
 
     private Hotkey _trigger;
+    private Hotkey _taskCapture;
     private Hotkey _cancel;
     private Hotkey _copyLast;
     private bool   _triggerActive;
+    private bool   _taskCaptureActive;
     private bool   _leftCtrlDown,  _rightCtrlDown,  _ctrlDown;
     private bool   _leftAltDown,   _rightAltDown,   _altDown;
     private bool   _leftShiftDown, _rightShiftDown, _shiftDown;
@@ -47,14 +50,16 @@ public sealed class LowLevelKeyHookService : IDisposable
         _proc = HookCallback;
     }
 
-    public void Configure(Hotkey trigger, Hotkey cancel, Hotkey copyLast)
+    public void Configure(Hotkey trigger, Hotkey taskCapture, Hotkey cancel, Hotkey copyLast)
     {
-        _trigger  = trigger;
-        _cancel   = cancel;
-        _copyLast = copyLast;
+        _trigger     = trigger;
+        _taskCapture = taskCapture;
+        _cancel      = cancel;
+        _copyLast    = copyLast;
         _triggerActive = false;
+        _taskCaptureActive = false;
         ResetTrackedModifiers();
-        Log.Info($"Hotkey: trigger='{trigger.Display}' cancel='{cancel.Display}' copyLast='{copyLast.Display}'");
+        Log.Info($"Hotkey: trigger='{trigger.Display}' taskCapture='{taskCapture.Display}' cancel='{cancel.Display}' copyLast='{copyLast.Display}'");
     }
 
     public void Install()
@@ -92,7 +97,8 @@ public sealed class LowLevelKeyHookService : IDisposable
 
         // Diagnostic: log every event matching the configured trigger VK, regardless of mod state.
         // Lets us confirm the hook is firing when the terminal has focus and whether mods/flags differ.
-        if (!_trigger.IsEmpty && vk == _trigger.Vk)
+        if ((!_trigger.IsEmpty && vk == _trigger.Vk) ||
+            (!_taskCapture.IsEmpty && vk == _taskCapture.Vk))
         {
             try
             {
@@ -115,7 +121,7 @@ public sealed class LowLevelKeyHookService : IDisposable
                 Log.Info($"HOOK vk=0x{vk:X2} {(isDown ? "DN" : "UP")} flags=0x{data.flags:X2} " +
                          $"mods={mods} async={asyncMods} tracked={trackedMods} req={_trigger.Required} " +
                          $"match={(_trigger.Required & mods) == _trigger.Required} " +
-                         $"active={_triggerActive} fg=[{procName}|{cls}|{title}]");
+                         $"active={_triggerActive} taskActive={_taskCaptureActive} fg=[{procName}|{cls}|{title}]");
             }
             catch (Exception ex) { Log.Error($"HOOK diag: {ex.Message}"); }
         }
@@ -135,6 +141,28 @@ public sealed class LowLevelKeyHookService : IDisposable
             if ((_copyLast.Required & modsPressed) == _copyLast.Required)
             {
                 DispatchCopyLast();
+                return (IntPtr)1;
+            }
+        }
+
+        // Task capture is checked before the normal trigger. This matters when
+        // normal is Ctrl+Space and task capture is Ctrl+Alt+Space: modifier
+        // subset matching would otherwise fire both.
+        if (!_taskCapture.IsEmpty && vk == _taskCapture.Vk)
+        {
+            var modsPressed = ObservedMods();
+            var allModsHeld = (_taskCapture.Required & modsPressed) == _taskCapture.Required;
+
+            if (isDown && allModsHeld && !_taskCaptureActive)
+            {
+                _taskCaptureActive = true;
+                DispatchTaskCapture(true);
+                return (IntPtr)1;
+            }
+            if (isUp && _taskCaptureActive)
+            {
+                _taskCaptureActive = false;
+                DispatchTaskCapture(false);
                 return (IntPtr)1;
             }
         }
@@ -174,6 +202,20 @@ public sealed class LowLevelKeyHookService : IDisposable
         app.Dispatcher.BeginInvoke(new Action(() =>
         {
             try { OnTrigger?.Invoke(pressed); } catch (Exception ex) { Log.Error($"OnTrigger: {ex}"); }
+        }));
+    }
+
+    private void DispatchTaskCapture(bool pressed)
+    {
+        var app = Application.Current;
+        if (app is null)
+        {
+            try { OnTaskCapture?.Invoke(pressed); } catch (Exception ex) { Log.Error($"OnTaskCapture: {ex}"); }
+            return;
+        }
+        app.Dispatcher.BeginInvoke(new Action(() =>
+        {
+            try { OnTaskCapture?.Invoke(pressed); } catch (Exception ex) { Log.Error($"OnTaskCapture: {ex}"); }
         }));
     }
 

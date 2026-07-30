@@ -10,7 +10,7 @@
         IsHitTestVisible="False"
         Focusable="False"
         SizeToContent="WidthAndHeight">
-    <Border CornerRadius="10" Padding="14,8" Background="#CC111111">
+    <Border x:Name="Shell" CornerRadius="10" Padding="14,8" Background="#CC111111">
         <StackPanel Orientation="Horizontal">
             <TextBlock x:Name="StateLabel" Text="Listening" Foreground="White" FontSize="13" FontWeight="SemiBold" VerticalAlignment="Center"/>
             <!-- Live input-level bars; hidden during transcription. -->
