@@ -1,0 +1,67 @@
+name: Release
+
+# Cut a release by pushing a tag that matches the VersionPrefix in
+# Directory.Build.props, e.g.
+#   git tag v0.1.50 && git push origin v0.1.50
+# The tag is only a label: the version baked into the binary comes from
+# Directory.Build.props, so keep the two in step.
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Resolve version from tag
+        id: version
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}" -replace '^v', ''
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "name=Handy-$version-win-x64" >> $env:GITHUB_OUTPUT
+
+      # Handy.Tests is a plain console runner, not a VSTest project: assertions
+      # throw, so a non-zero exit code is the pass/fail signal. Hence run, not test.
+      - name: Test
+        run: dotnet run --project tests\Handy.Tests\Handy.Tests.csproj -c Release
+
+      # Self-contained single-FOLDER, deliberately not single-file: Whisper.net
+      # ships native whisper.cpp DLLs that don't survive single-file extraction.
+      # Self-contained means no .NET Desktop Runtime prerequisite for users.
+      - name: Publish
+        run: >
+          dotnet publish src\Handy\Handy.csproj
+          -c Release
+          -r win-x64
+          -p:SelfContained=true
+          -o publish\${{ steps.version.outputs.name }}
+
+      - name: Package
+        shell: pwsh
+        run: Compress-Archive -Path publish\${{ steps.version.outputs.name }} -DestinationPath ${{ steps.version.outputs.name }}.zip
+
+      - name: Create release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $notes = @"
+          Self-contained Windows x64 build. No .NET runtime install needed - unzip and run ``Handy.exe``.
+
+          **This build is unsigned.** Windows SmartScreen will show *Windows protected your PC* on first run; click **More info** then **Run anyway**.
+
+          Speech models are not bundled - Handy downloads them on first use from the Models tab. See the README for manual model placement.
+          "@
+          gh release create ${{ github.ref_name }} ${{ steps.version.outputs.name }}.zip --title ${{ github.ref_name }} --notes $notes
