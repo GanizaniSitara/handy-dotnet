@@ -31,7 +31,7 @@ public sealed class AppSettings
     /// <summary>Recovery hotkey: copies the most recent transcription back onto the clipboard
     /// without triggering paste. Useful when the auto-paste failed silently (e.g. terminal
     /// integrity-level mismatch) and the user wants to paste it manually somewhere else.</summary>
-    public string CopyLastHotkey { get; set; } = "Ctrl+Alt+Shift+Space";
+    public string CopyLastHotkey { get; set; } = "Ctrl+Shift+C";
 
     /// <summary>Push-to-talk (hold) vs. toggle.</summary>
     public bool PushToTalk { get; set; } = false;
