@@ -236,15 +236,31 @@ Download button or place the file manually, then apply the setting again.
 
 ## Usage
 
-1. Run `Handy.exe`. A tray icon appears. Default hotkey: **Ctrl + Alt + Space**.
+1. Run `Handy.exe`. A tray icon appears.
    - `--show` opens settings at launch.
    - `--start-hidden` forces tray-only.
    - `--no-tray` hides the tray icon.
 2. Put the cursor in any text field.
-3. Press the hotkey. Speak. Press it again (toggle) or release (if push-to-talk is on).
+3. Press the dictation hotkey. Speak. Press it again (toggle) or release (if push-to-talk is on).
 4. The transcript goes to the clipboard and is pasted via the configured paste method.
-5. If paste fails, use the tray menu or **Ctrl + Alt + Shift + Space** to copy
-   the last transcript back to the clipboard.
+
+### Default hotkeys
+
+| Chord | Action |
+|---|---|
+| **Ctrl + Space** | Dictate — transcribe and paste into the focused field |
+| **Ctrl + Shift + Space** | Task capture — transcribe straight to the inbox folder, no paste |
+| **Escape** | Cancel an in-flight recording |
+| **Ctrl + Alt + Shift + Space** | Copy the last transcript back to the clipboard |
+
+All four are rebindable in Settings. Pick chords that don't collide with anything
+else hooking the keyboard globally — including another copy of Handy.
+
+**Task capture** is for dictating a thought without derailing what you're doing:
+nothing is pasted and focus never moves. Each capture lands as a timestamped JSON
+file in `%LOCALAPPDATA%\Handy\task-inbox` (configurable via `taskCaptureInbox`),
+carrying the transcript plus the foreground app it was dictated over, ready for
+whatever picks the folder up.
 
 Useful settings:
 

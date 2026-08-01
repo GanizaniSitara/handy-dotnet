@@ -228,7 +228,7 @@ static void AssertTaskCaptureSettingsMigration()
 
         AssertEqual(3, migrated.SettingsVersion, "task capture migration: settings version");
         AssertEqual("Ctrl+Space", migrated.Hotkey, "task capture migration: ordinary hotkey");
-        AssertEqual("Ctrl+Alt+Space", migrated.TaskCaptureHotkey, "task capture migration: intake hotkey");
+        AssertEqual("Ctrl+Shift+Space", migrated.TaskCaptureHotkey, "task capture migration: intake hotkey");
     }
     finally
     {
