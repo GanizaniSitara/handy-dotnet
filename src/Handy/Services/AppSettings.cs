@@ -22,7 +22,7 @@ public sealed class AppSettings
 
     /// <summary>Capture a dictated task into the durable inbox folder
     /// without pasting into the foreground application.</summary>
-    public string TaskCaptureHotkey { get; set; } = "Ctrl+Alt+Space";
+    public string TaskCaptureHotkey { get; set; } = "Ctrl+Shift+Space";
 
     /// <summary>Where task captures are queued. Environment variables are expanded,
     /// so the folder can point at whatever process consumes the queue.</summary>
@@ -232,13 +232,13 @@ public sealed class AppSettings
         if (!hasTaskCaptureHotkey &&
             string.Equals(s.Hotkey, "Ctrl+Alt+Space", StringComparison.OrdinalIgnoreCase))
         {
-            // Ctrl+Alt+Space becomes the dedicated intake chord. Existing installs
+            // Ctrl+Shift+Space becomes the dedicated intake chord. Existing installs
             // that still had the old default move ordinary dictation to Ctrl+Space;
             // custom chords are left untouched.
             s.Hotkey = "Ctrl+Space";
-            s.TaskCaptureHotkey = "Ctrl+Alt+Space";
+            s.TaskCaptureHotkey = "Ctrl+Shift+Space";
             migrated = true;
-            Log.Info("Settings migration: transcribe Ctrl+Space; task capture Ctrl+Alt+Space.");
+            Log.Info("Settings migration: transcribe Ctrl+Space; task capture Ctrl+Shift+Space.");
         }
 
         if (!hasSettingsVersion)
