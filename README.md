@@ -141,6 +141,23 @@ encoded [1, 1024, T_enc]   (T_enc ≈ T_frames / 8, 80 ms per frame)
 greedy loop → token ids → vocab.txt → text
 ```
 
+## Download
+
+Prebuilt Windows x64 binaries are on the
+[releases page](https://github.com/GanizaniSitara/handy-dotnet/releases). The zip is
+self-contained — unzip it anywhere and run `Handy.exe`; no .NET runtime install
+needed.
+
+**Builds are unsigned.** Code-signing certificates now require hardware tokens and
+several hundred pounds a year, which isn't proportionate for a fork like this. On
+first run Windows SmartScreen will show *"Windows protected your PC"* — click
+**More info**, then **Run anyway**. If you'd rather not take that on trust, build
+from source below; it's two commands.
+
+Speech models are not bundled. Handy downloads them on first use from the Models
+tab — see [Parakeet model](#parakeet-model) and [Whisper model](#whisper-model)
+for manual placement.
+
 ## Build
 
 ### Prerequisites

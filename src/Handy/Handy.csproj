@@ -28,4 +28,16 @@
     <None Include="..\..\docs\domain-terms.md" Link="docs\domain-terms.md" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
+  <!-- Whisper.net.Runtime stages its native whisper.cpp DLLs for every Windows
+       architecture regardless of the publish RID, so a win-x64 publish ships
+       win-arm64 and win-x86 copies it can never load. Drop them. -->
+  <Target Name="TrimForeignRuntimes" AfterTargets="Publish" Condition="'$(RuntimeIdentifier)' != ''">
+    <ItemGroup>
+      <ForeignRuntimeFile Include="$(PublishDir)runtimes\**\*.*"
+                          Exclude="$(PublishDir)runtimes\$(RuntimeIdentifier)\**\*.*" />
+    </ItemGroup>
+    <Delete Files="@(ForeignRuntimeFile)" />
+    <RemoveDir Directories="@(ForeignRuntimeFile->'%(RootDir)%(Directory)')" />
+  </Target>
+
 </Project>
