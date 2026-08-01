@@ -37,6 +37,7 @@ internal sealed class GuidTrayIcon : NativeWindow, IDisposable
     private string _tooltip;
     private bool _visible;
     private bool _disposed;
+    private bool _useGuid = true;
 
     public GuidTrayIcon(Guid id, Icon icon, string tooltip)
     {
@@ -125,7 +126,24 @@ internal sealed class GuidTrayIcon : NativeWindow, IDisposable
             var addError = Marshal.GetLastWin32Error();
             if (!Shell_NotifyIcon(NIM_MODIFY, ref data))
             {
-                Log.Warn($"Tray icon add failed (error={addError}, modifyError={Marshal.GetLastWin32Error()}).");
+                var modifyError = Marshal.GetLastWin32Error();
+
+                // The shell binds a GUID-identified icon to the executable path that
+                // first registered it. Once that path has moved or been deleted --
+                // routine for a zip-distributed build unpacked somewhere new each
+                // release -- every NIM_ADD for that GUID fails with E_FAIL and no
+                // icon ever appears again. Fall back to plain hWnd+uID identity,
+                // which has no path affinity. Costs us the stable notification-area
+                // position across restarts; keeping a visible icon matters more.
+                if (_useGuid)
+                {
+                    Log.Warn($"Tray icon add failed with GUID identity (error={addError}, modifyError={modifyError}); retrying without it.");
+                    _useGuid = false;
+                    Add();
+                    return;
+                }
+
+                Log.Warn($"Tray icon add failed (error={addError}, modifyError={modifyError}).");
                 _visible = false;
                 return;
             }
@@ -159,7 +177,7 @@ internal sealed class GuidTrayIcon : NativeWindow, IDisposable
             cbSize = (uint)Marshal.SizeOf<NotifyIconData>(),
             hWnd = Handle,
             uID = 1,
-            uFlags = flags | NIF_GUID,
+            uFlags = _useGuid ? flags | NIF_GUID : flags,
             uCallbackMessage = CallbackMessage,
             hIcon = _icon.Handle,
             szTip = _tooltip,
