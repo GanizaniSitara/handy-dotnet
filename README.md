@@ -53,7 +53,7 @@ calling out:
   `CitrixWorkspaceApp`, `Workspace`), Direct paste uses a separate
   per-char delay so the client's keystroke forwarding doesn't drop or
   reorder Unicode events. Local apps keep the fast (zero-delay) path.
-- **Copy-last-transcript hotkey** (default `Ctrl+Alt+Shift+Space`) puts
+- **Copy-last-transcript hotkey** (default `Ctrl+Shift+C`) puts
   the most recent transcript back on the clipboard. Recovery path when a
   paste fails silently — common in VDI / Citrix / integrity-level-mismatch
   terminal windows.
@@ -251,7 +251,7 @@ Download button or place the file manually, then apply the setting again.
 | **Ctrl + Space** | Dictate — transcribe and paste into the focused field |
 | **Ctrl + Shift + Space** | Task capture — transcribe straight to the inbox folder, no paste |
 | **Escape** | Cancel an in-flight recording |
-| **Ctrl + Alt + Shift + Space** | Copy the last transcript back to the clipboard |
+| **Ctrl + Shift + C** | Copy the last transcript back to the clipboard |
 
 All four are rebindable in Settings. Pick chords that don't collide with anything
 else hooking the keyboard globally — including another copy of Handy.
