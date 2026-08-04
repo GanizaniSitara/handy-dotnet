@@ -30,9 +30,23 @@ public partial class App : Application
     private string                   _activeBackend = "Parakeet";
     private string                   _activeWhisperModel = "base";
 
-    private bool _recording;
-    private bool _cancelled;
-    private bool _transcribing;
+    private SessionTracker?          _session;
+
+    // Written from the keyboard-hook thread, read on the pipeline thread.
+    // volatile so a cancel pressed mid-dictation is actually observed rather
+    // than sitting in a register while the pipeline runs to completion.
+    private volatile bool _recording;
+    private volatile bool _transcribing;
+
+    // Cancellation is stamped per dictation rather than held in a shared bool.
+    // A plain flag was reset by the next StartRecording, so starting a new
+    // dictation while a cancelled one was still decoding un-cancelled it and
+    // pasted the abandoned transcript into the new context. Comparing
+    // generations scopes the cancel to exactly the dictation it was meant for,
+    // and needs no reset.
+    private volatile int _dictationGeneration;
+    private volatile int _cancelledGeneration = -1;
+
     private int _shutdownCleanupStarted;
     private CaptureDestination _captureDestination = CaptureDestination.Paste;
     private DateTimeOffset _captureStartedAtUtc;
@@ -155,6 +169,23 @@ public partial class App : Application
         var noTray = e.Args.Any(a => a == "--no-tray");
         var showWindow = e.Args.Any(a => a == "--show");
 
+        // Only the real tray instance tracks a session. The one-shot CLI modes
+        // above share this data dir, and letting them write (or clear) the
+        // marker would destroy the running instance's crash evidence.
+        _session = new SessionTracker(_dataDir, Handy.MainWindow.ResolveDisplayVersion());
+        var previous = _session.TakePreviousIfUnclean();
+        if (previous is not null)
+        {
+            var heartbeatAge = previous.HeartbeatUtc == default
+                ? "unknown"
+                : $"{(long)(DateTime.UtcNow - previous.HeartbeatUtc).TotalSeconds}s";
+            var id      = string.IsNullOrEmpty(previous.SessionId) ? "?" : previous.SessionId;
+            var version = string.IsNullOrEmpty(previous.Version)   ? "?" : previous.Version;
+            Log.Error($"Session: previous session did not exit cleanly (id={id} version={version} " +
+                      $"pid={previous.Pid} lastPhase={previous.Phase} heartbeatAge={heartbeatAge})");
+        }
+        _session.Start();
+
         _asr = CreateTranscriptionService(_settings, _dataDir, _parakeetModelDir);
         _activeBackend = NormalizeBackend(_settings.TranscriptionBackend);
         _activeWhisperModel = WhisperTranscriptionService.NormalizeModelName(_settings.WhisperModel);
@@ -207,7 +238,13 @@ public partial class App : Application
         // Listen for CLI-forwarded signals from the single-instance gate.
         SingleInstance.OnSignal += HandleSignal;
 
-        Log.Info($"Handy started. Backend={_activeBackend} model={(_asr.IsReady ? DescribeActiveModelPath(_settings, _dataDir, _parakeetModelDir) : "NOT FOUND — see README")}");
+        // "Session:" keeps this on the always-pass channel. It used to be a
+        // plain INFO line, which a Quiet file verbosity discarded — leaving the
+        // log with no session boundaries at all and crashes indistinguishable
+        // from clean exits.
+        Log.Info($"Session: started id={_session.SessionId} version={Handy.MainWindow.ResolveDisplayVersion()} " +
+                 $"pid={Environment.ProcessId} os={Environment.OSVersion.Version} backend={_activeBackend} " +
+                 $"model={(_asr.IsReady ? DescribeActiveModelPath(_settings, _dataDir, _parakeetModelDir) : "NOT FOUND — see README")}");
         Log.Info($"PTT={_settings.PushToTalk} Paste={_settings.PasteMethod} Autostart={_settings.Autostart}");
 
         var shouldStartHidden = _settings.StartHidden || startHiddenOverride;
@@ -249,10 +286,27 @@ public partial class App : Application
         if (Interlocked.Exchange(ref _shutdownCleanupStarted, 1) != 0)
             return;
 
+        _session?.SetPhase(SessionPhase.Shutdown);
+
         if (saveSettings)
         {
             try { _settings.Save(); } catch { /* best-effort */ }
         }
+
+        // saveSettings is true only on the deliberate exit paths (tray Exit,
+        // Windows session ending). Everything else — unhandled exception, a
+        // bare ProcessExit, a hard kill — leaves the marker on disk for the
+        // next launch to find and report.
+        // Guarded on _session: the CLI-forwarding and one-shot paths bail out of
+        // OnStartup before a session exists, and they share the live data dir.
+        // Without this they stamp a false "exit clean" into the running
+        // instance's log, destroying the very evidence this is here to keep.
+        if (saveSettings && _session is not null)
+        {
+            Log.Info("Session: exit clean");
+            _session.MarkCleanExit();
+        }
+        _session?.Dispose();
 
         SingleInstance.OnSignal -= HandleSignal;
         SingleInstance.Shutdown();
@@ -389,10 +443,11 @@ public partial class App : Application
             return;
         }
         _recording = true;
-        _cancelled = false;
+        _dictationGeneration++;
         _captureDestination = destination;
         _captureStartedAtUtc = DateTimeOffset.UtcNow;
         _captureForeground = ForegroundWindowSnapshot.Capture();
+        _session?.SetPhase(SessionPhase.Listening);
         _recStartTicks = Stopwatch.GetTimestamp();
         ResetSpeculativeState();
         _tray?.SetState(Services.TrayIconManager.State.Recording);
@@ -508,6 +563,12 @@ public partial class App : Application
     private async void StopAndTranscribe()
     {
         _recording = false;
+        // Claim the transcribing state immediately. The StopAsync await below
+        // takes postRollMs (200 ms by default), and until this was set here that
+        // window belonged to neither flag — an Escape pressed just after release
+        // hit OnCancel while both were false and was silently dropped.
+        _transcribing = true;
+        var generation = _dictationGeneration;
         var captureDestination = _captureDestination;
         var captureStartedAtUtc = _captureStartedAtUtc;
         var captureForeground = _captureForeground;
@@ -520,8 +581,13 @@ public partial class App : Application
         var stopMs = stopSw.ElapsedMilliseconds;
         Log.Info($"Recording stopped. {samples.Length} samples captured (post-roll {_settings.PostRollMs} ms).");
 
-        if (_cancelled)
+        if (_cancelledGeneration == generation)
         {
+            // These early returns bypass the try/finally that normally clears
+            // the flag, so release it explicitly or the app stays "transcribing"
+            // forever and the next Escape goes down the wrong branch.
+            _transcribing = false;
+            _session?.SetPhase(SessionPhase.Idle);
             SetUiState(isRecording: false, isTranscribing: false, hideOverlay: true);
             Log.Info("Recording cancelled; skipping transcription.");
             try { _specCts?.Cancel(); } catch { }
@@ -533,6 +599,8 @@ public partial class App : Application
         }
         if (samples.Length < 16000 / 4)
         {
+            _transcribing = false;
+            _session?.SetPhase(SessionPhase.Idle);
             SetUiState(isRecording: false, isTranscribing: false, hideOverlay: true);
             Log.Warn("Recording too short; skipping.");
             try { _specCts?.Cancel(); } catch { }
@@ -545,6 +613,7 @@ public partial class App : Application
 
         _feedback?.PlayStop();
         SetUiState(isRecording: false, isTranscribing: true, hideOverlay: false);
+        _session?.SetPhase(SessionPhase.Asr);
         _transcribing = true;
         int rawSampleCount = samples.Length;
         int vadOutCount = samples.Length;
@@ -701,7 +770,19 @@ public partial class App : Application
             postMs = postSw.ElapsedMilliseconds;
             Log.Info($"Transcript: {text}");
 
-            if (!string.IsNullOrWhiteSpace(text))
+            // Late cancel. The decode is a synchronous native call we can't
+            // interrupt, so Escape pressed during transcription lands here: the
+            // work is finished but the result is thrown away. Checked before
+            // history, paste and task capture so a cancelled dictation leaves no
+            // trace anywhere. Deliberately NOT copied to the clipboard — the
+            // user asked to discard it (unlike the wrong-window path, where the
+            // transcript is preserved because they never asked to lose it).
+            if (_cancelledGeneration == generation)
+            {
+                Log.Info("Cancelled during transcription; discarding transcript.");
+                outcome = "cancelled";
+            }
+            else if (!string.IsNullOrWhiteSpace(text))
             {
                 Log.Info("Flow: before history.Add");
                 var historySw = Stopwatch.StartNew();
@@ -735,18 +816,37 @@ public partial class App : Application
                 }
                 else
                 {
+                    _session?.SetPhase(SessionPhase.Paste);
+                    var pasteFailed = false;
                     try
                     {
-                        _injector!.Paste(text, _settings);
-                        pasteOk = true;
+                        // The window the user was looking at when they started
+                        // talking is the only correct destination; the injector
+                        // refuses anything else rather than typing blind.
+                        var result = _injector!.Paste(text, _settings, new IntPtr(captureForeground.Hwnd));
+                        pasteOk = result.Delivered;
+                        if (!result.Delivered)
+                        {
+                            pasteFailed = true;
+                            outcome = result.Outcome.ToDiagToken();
+                            Log.Warn($"Paste not delivered ({result.Outcome}): {result.Detail}");
+                            CopyTextToClipboard(text, outcome);
+                            _tray?.Notify("Handy.NET", $"Not pasted — transcript copied to clipboard. {result.Detail}");
+                        }
                     }
                     catch (Exception pex)
                     {
                         Log.Error($"Paste threw: {pex.Message}");
                         outcome = "pasteThrew";
+                        pasteFailed = true;
+                        CopyTextToClipboard(text, "pasteThrew");
+                        _tray?.Notify("Handy.NET", "Paste failed — transcript copied to clipboard.");
                     }
                     var copySw = Stopwatch.StartNew();
-                    CopyTranscriptToClipboardIfEnabled(text);
+                    // Already on the clipboard as the recovery copy; don't
+                    // overwrite it (and don't pay for a second clipboard round
+                    // trip) just to honour the always-copy setting.
+                    if (!pasteFailed) CopyTranscriptToClipboardIfEnabled(text);
                     copySw.Stop();
                     copyMs = copySw.ElapsedMilliseconds;
                 }
@@ -768,12 +868,16 @@ public partial class App : Application
         finally
         {
             _transcribing = false;
+            _session?.SetPhase(SessionPhase.Idle);
             SetUiState(isRecording: false, isTranscribing: false, hideOverlay: true);
             // After the hide, so the flash owns the pill until its own timer.
             if (outcome == "taskCaptured")
                 FlashOverlay("Task captured", success: true);
             else if (outcome == "taskCaptureWriteFailed")
                 FlashOverlay("Capture failed — copied", success: false);
+            else if (outcome is "wrongWindow" or "pasteInterrupted" or "pasteRefused"
+                              or "pastePartial" or "pasteThrew")
+                FlashOverlay("Not pasted — copied", success: false);
             // Cancel any in-flight speculative work so it doesn't write to
             // _specCache after this dictation ends and accidentally get reused
             // on the next one with stale audio.
@@ -885,10 +989,31 @@ public partial class App : Application
 
     private void OnCancel()
     {
+        // Cancel has to work for the whole dictation, not just while audio is
+        // still being captured. StopAndTranscribe clears _recording on its very
+        // first line, so gating on _recording alone made Escape a no-op from the
+        // moment the hotkey was released until the paste landed.
+        if (_transcribing)
+        {
+            // Already past the capture stage: flag it and let the in-flight
+            // pipeline discard its own result. Calling StopAndTranscribe again
+            // here would re-enter an async void method, stop an already-stopped
+            // capture, and emit a second Diag line.
+            _cancelledGeneration = _dictationGeneration;
+            _feedback?.PlayCancel();
+            // Clear the UI now. The ONNX decode is a synchronous native call we
+            // can't interrupt, so it finishes in the background and is thrown
+            // away — but leaving "Transcribing" on screen until it does is
+            // indistinguishable from Escape not working.
+            SetUiState(isRecording: false, isTranscribing: false, hideOverlay: true);
+            Log.Info("Cancel requested during transcription; result will be discarded.");
+            return;
+        }
+
         if (!_recording) return;
-        _cancelled = true;
+        _cancelledGeneration = _dictationGeneration;
         _feedback?.PlayCancel();
-        // StopAndTranscribe will see _cancelled and return without ASR.
+        // StopAndTranscribe will see the cancel stamp and return without ASR.
         StopAndTranscribe();
     }
 
@@ -1407,16 +1532,34 @@ public partial class App : Application
 
     private static TranscriptionOptions CreateTranscriptionOptions(AppSettings settings)
     {
-        if (!settings.WhisperVocabularyPromptEnabled ||
-            !string.Equals(NormalizeBackend(settings.TranscriptionBackend), "Whisper", StringComparison.OrdinalIgnoreCase))
+        var isWhisper = string.Equals(
+            NormalizeBackend(settings.TranscriptionBackend), "Whisper", StringComparison.OrdinalIgnoreCase);
+
+        if (!settings.WhisperVocabularyPromptEnabled || !isWhisper)
         {
+            // Dropping the prompt used to be completely silent, so "biasing is
+            // on but nothing is happening" was indistinguishable from a bug.
+            // Only worth a line when the user has actually asked for biasing.
+            if (settings.WhisperVocabularyPromptEnabled && !isWhisper)
+            {
+                Log.Info($"Glossary: recognition biasing skipped — backend is " +
+                         $"{NormalizeBackend(settings.TranscriptionBackend)}, not Whisper. " +
+                         $"Domain Terms still apply as post-transcription corrections " +
+                         $"(rules={settings.DomainCorrections.Count}).");
+            }
             return TranscriptionOptions.None;
         }
 
         var prompt = WhisperVocabularyPromptBuilder.Build(settings.DomainCorrections);
-        return prompt.HasPrompt
-            ? new TranscriptionOptions(prompt.Prompt, prompt.TermCount, settings.WhisperCarryInitialPrompt)
-            : TranscriptionOptions.None;
+        if (!prompt.HasPrompt)
+        {
+            Log.Info($"Glossary: recognition biasing enabled but produced no prompt " +
+                     $"(rules={settings.DomainCorrections.Count}).");
+            return TranscriptionOptions.None;
+        }
+
+        Log.Info($"Glossary: recognition biasing active with {prompt.TermCount} term(s).");
+        return new TranscriptionOptions(prompt.Prompt, prompt.TermCount, settings.WhisperCarryInitialPrompt);
     }
 
     private static string? ArgumentValue(string[] args, string name)

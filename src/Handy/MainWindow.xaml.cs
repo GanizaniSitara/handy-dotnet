@@ -51,7 +51,7 @@ public partial class MainWindow : Window
     // short SHA + dirty flag) injected by the build target in Handy.csproj.
     // Fall back to the plain AssemblyVersion if the attribute is missing
     // (e.g. when running outside a git checkout).
-    private static string ResolveDisplayVersion()
+    internal static string ResolveDisplayVersion()
     {
         var asm = typeof(MainWindow).Assembly;
         var info = asm.GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute), false)
@@ -121,6 +121,26 @@ public partial class MainWindow : Window
         WhisperCarryPromptCheck.Opacity = whisperSelected ? 1.0 : 0.55;
         ParakeetVariantCombo.IsEnabled = !whisperSelected;
         ParakeetVariantCombo.Opacity = whisperSelected ? 0.55 : 1.0;
+
+        // The biasing control was already greyed out for non-Whisper backends,
+        // but nothing said why, and nothing said that Domain Terms still work
+        // regardless. Greying a box without a reason reads as a bug.
+        if (BiasingAvailabilityHint is not null)
+        {
+            BiasingAvailabilityHint.Text = whisperSelected
+                ? "Uses your Domain Terms as a vocabulary prompt so Whisper is more likely to hear them correctly. Your Domain Terms are also applied as corrections after transcription, on every backend."
+                : "Recognition biasing needs the Whisper backend — Parakeet has no equivalent. Your Domain Terms still work: they are applied as corrections after transcription, on every backend.";
+        }
+
+        // Speed is the reason to stay on Parakeet, and it isn't visible at the
+        // point where the backend is actually chosen. Figures are the DCT-015
+        // bench medians on jfk.wav; they are indicative, not a live measurement.
+        if (BackendCostHint is not null)
+        {
+            BackendCostHint.Text = whisperSelected
+                ? "Whisper is slower than Parakeet: roughly 1.5 s for tiny.en and 3 s for base, against about 0.7 s for Parakeet on a short clip. Pick it when you need recognition biasing."
+                : "Parakeet is the fastest option here — roughly 0.7 s on a short clip, against about 1.5 s for Whisper tiny.en and 3 s for Whisper base.";
+        }
     }
 
     private void LoadFromSettings()
@@ -186,6 +206,14 @@ public partial class MainWindow : Window
             WhisperPromptCheck.IsChecked = _settings.WhisperVocabularyPromptEnabled;
             WhisperCarryPromptCheck.IsChecked = _settings.WhisperCarryInitialPrompt;
             SelectComboByContent(DownloadWhisperModelCombo, WhisperTranscriptionService.NormalizeModelName(_settings.WhisperModel));
+
+            // The two halves of this feature live on different pages: the table
+            // is here on Advanced, the biasing switch is on Models. Without a
+            // pointer, finding the second half is pure luck.
+            DomainTermsScopeHint.Text =
+                "These corrections are applied after transcription and work with every backend. " +
+                "Whisper can additionally use them to bias recognition itself — see Recognition biasing on the Models tab.";
+
             RefreshModelStatus();
         }
         finally { _loading = false; }
@@ -516,37 +544,30 @@ public partial class MainWindow : Window
         w.Show();
     }
 
+    private void OnOpenHelp(object sender, RoutedEventArgs e)
+    {
+        if (HelpWindow.TryShow(this, "help.md", "Help")) return;
+
+        MessageBox.Show(
+            "Help file was not found. Expected docs\\help.md next to Handy.exe or in the repository docs folder.",
+            "Handy.NET",
+            MessageBoxButton.OK,
+            MessageBoxImage.Information);
+    }
+
     private void OnOpenDomainTermsHelp(object sender, RoutedEventArgs e)
     {
-        var candidates = new[]
-        {
-            Path.Combine(AppContext.BaseDirectory, "docs", "domain-terms.md"),
-            Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "docs", "domain-terms.md")),
-        };
+        // Rendered in-app rather than shelled out. Process.Start with
+        // UseShellExecute needs a registered .md handler, and a stock Windows
+        // install has none — so this button used to produce an error dialog
+        // instead of the help, for every user, not just unlucky ones.
+        if (HelpWindow.TryShow(this, "domain-terms.md", "Domain Terms")) return;
 
-        var path = candidates.FirstOrDefault(File.Exists);
-        if (path is null)
-        {
-            MessageBox.Show(
-                "Domain Terms help file was not found. Expected docs\\domain-terms.md next to Handy.exe or in the repository docs folder.",
-                "Handy.NET",
-                MessageBoxButton.OK,
-                MessageBoxImage.Information);
-            return;
-        }
-
-        try
-        {
-            Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show(
-                $"Could not open Domain Terms help:\n{ex.Message}",
-                "Handy.NET",
-                MessageBoxButton.OK,
-                MessageBoxImage.Warning);
-        }
+        MessageBox.Show(
+            "Domain Terms help file was not found. Expected docs\\domain-terms.md next to Handy.exe or in the repository docs folder.",
+            "Handy.NET",
+            MessageBoxButton.OK,
+            MessageBoxImage.Information);
     }
 
     private static string ComboContent(ComboBox combo, string fallback)

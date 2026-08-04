@@ -25,6 +25,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <None Include="..\..\docs\help.md" Link="docs\help.md" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\..\docs\domain-terms.md" Link="docs\domain-terms.md" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 

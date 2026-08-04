@@ -6,6 +6,12 @@ namespace Handy;
 
 internal enum LogVerbosity
 {
+    /// <summary>
+    /// Session lifecycle and crash evidence. Never filtered — no verbosity
+    /// setting can hide these, the same way WARN / ERROR can't be hidden.
+    /// Not selectable in the UI; it exists only as a category floor.
+    /// </summary>
+    Always = 0,
     /// <summary>Only the text-in / text-out lines (Raw / Filter / Transcript).</summary>
     Quiet = 1,
     /// <summary>Above plus Paste / Recording / startup lines — what a user usually wants while troubleshooting.</summary>
@@ -19,6 +25,7 @@ internal enum LogVerbosity
 internal static class Log
 {
     private const long MaxBytes = 500_000;       // matches upstream tauri-plugin-log
+    private const int  Generations = 5;          // handy.log.1 .. handy.log.5
     private const string MutexName = @"Global\Handy.Log.v1";
 
     private static StreamWriter? _file;
@@ -50,6 +57,12 @@ internal static class Log
     // dropdowns in the Settings → Log tab.
     private static LogVerbosity CategoryFor(string msg)
     {
+        // Session lifecycle: the only record of whether the previous run exited
+        // or died. Historically this was Normal, so a Quiet file setting threw
+        // away the startup banner and left crashes indistinguishable from clean
+        // exits. It must never be filterable again.
+        if (msg.StartsWith("Session:"))
+            return LogVerbosity.Always;
         if (msg.StartsWith("Raw:")        || msg.StartsWith("Filter:")    || msg.StartsWith("Transcript:"))
             return LogVerbosity.Quiet;
         if (msg.StartsWith("HOOK "))
@@ -93,7 +106,9 @@ internal static class Log
 
     private static void Write(string level, string msg)
     {
-        var line = $"{DateTime.Now:HH:mm:ss} {level,-5} {msg}";
+        // Full date, not just the clock: a rotated log spans weeks, and an
+        // incident report is useless if its lines can't be tied to a day.
+        var line = $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} {level,-5} {msg}";
 
         // Always-pass channels: anything not INFO (WARN / ERROR) bypasses the
         // verbosity filter so problems never get hidden by a quiet setting.
@@ -123,12 +138,18 @@ internal static class Log
             var fi = new FileInfo(path);
             if (!fi.Exists || fi.Length < MaxBytes) return;
 
-            var rotated = path + ".1";
-            if (File.Exists(rotated))
+            // Shift the generations down (.4 -> .5, .3 -> .4, ...) before the
+            // live log becomes .1. A single generation meant a busy week could
+            // destroy the only copy of a crash still under investigation.
+            try { File.Delete($"{path}.{Generations}"); } catch { }
+            for (var i = Generations - 1; i >= 1; i--)
             {
-                try { File.Delete(rotated); } catch { }
+                var from = $"{path}.{i}";
+                if (!File.Exists(from)) continue;
+                try { File.Move(from, $"{path}.{i + 1}", overwrite: true); } catch { }
             }
-            try { File.Move(path, rotated); }
+
+            try { File.Move(path, path + ".1", overwrite: true); }
             catch (Exception ex) { Console.Error.WriteLine($"Log rotate failed: {ex.Message}"); }
         }
         catch (Exception ex)
