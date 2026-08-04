@@ -124,6 +124,18 @@ public sealed class AudioCaptureService : IDisposable
             _recBuffer.SetLength(0);
         }
 
+        // A recording that captured nothing means the device accepted
+        // StartRecording but never delivered a callback — a dead or wedged
+        // microphone. Say so plainly: the symptom otherwise surfaces only as a
+        // "tooShort" outcome, which reads as "you didn't speak for long enough"
+        // and sends diagnosis in entirely the wrong direction.
+        if (pcm.Length == 0)
+        {
+            Log.Warn($"Microphone produced no audio for this recording — device " +
+                     $"{DescribeDevice(ResolveDeviceIndex(_preferredDevice), _preferredDevice)} " +
+                     $"is selected but delivered nothing. Check it is connected and selected in Settings.");
+        }
+
         var samples = new float[pcm.Length / 2];
         for (int i = 0, j = 0; i < pcm.Length - 1; i += 2, j++)
         {
@@ -165,7 +177,7 @@ public sealed class AudioCaptureService : IDisposable
         {
             w.StartRecording();
             lock (_lock) { _wave = w; }
-            Log.Info($"Audio capture started on device #{device} ('{WaveInEvent.GetCapabilities(device).ProductName}')");
+            Log.Info($"Audio capture started on device {DescribeDevice(device, _preferredDevice)}");
         }
         catch (Exception ex)
         {
@@ -193,22 +205,49 @@ public sealed class AudioCaptureService : IDisposable
         if (wave is not null && staleMs <= CaptureStaleRestartMs) return;
 
         var lastData = lastDataTicks <= 0 ? "never" : $"{staleMs}ms ago";
-        Log.Warn($"Audio capture stale before recording (lastData={lastData}, bufferedBytes={writePos}); restarting capture.");
+        // totalBytesCaptured is the monotonic ring write cursor, not a buffer
+        // size — the old "bufferedBytes" name read like a runaway allocation.
+        Log.Warn($"Audio capture stale before recording (lastData={lastData}, " +
+                 $"totalBytesCaptured={writePos}); restarting capture.");
         RestartCapture(clearBufferedAudio: true);
     }
 
+    /// <summary>
+    /// WinMM's "let Windows pick the default device" sentinel. Device number 0
+    /// is merely the *first enumerated* device, which is not the same thing —
+    /// relying on it meant Handy silently followed whatever microphone happened
+    /// to enumerate first, and switched behind the user's back whenever USB
+    /// devices re-enumerated.
+    /// </summary>
+    private const int WaveMapperDevice = -1;
+
     private static int ResolveDeviceIndex(string preferred)
     {
-        if (WaveInEvent.DeviceCount == 0) return 0;
-        if (string.IsNullOrWhiteSpace(preferred)) return 0;
+        if (WaveInEvent.DeviceCount == 0) return WaveMapperDevice;
+        if (string.IsNullOrWhiteSpace(preferred)) return WaveMapperDevice;
         for (int i = 0; i < WaveInEvent.DeviceCount; i++)
         {
+            // WinMM truncates ProductName to 31 chars (MAXPNAMELEN), so an
+            // exact match fails for longer device names — hence the prefix
+            // check. Don't tighten this into a plain equality test.
             var name = WaveInEvent.GetCapabilities(i).ProductName;
             if (string.Equals(name, preferred, StringComparison.OrdinalIgnoreCase)) return i;
             if (preferred.StartsWith(name, StringComparison.OrdinalIgnoreCase)) return i;
         }
-        Log.Warn($"Preferred input device '{preferred}' not found; using default.");
-        return 0;
+        Log.Warn($"Preferred input device '{preferred}' not found; falling back to the Windows default.");
+        return WaveMapperDevice;
+    }
+
+    /// <summary>Human-readable description of the device actually in use.</summary>
+    private static string DescribeDevice(int device, string preferred)
+    {
+        var how = string.IsNullOrWhiteSpace(preferred) ? "Windows default"
+                : device == WaveMapperDevice          ? $"Windows default — configured '{preferred}' not found"
+                                                      : "configured";
+        if (device == WaveMapperDevice) return $"WAVE_MAPPER ({how})";
+
+        try { return $"#{device} '{WaveInEvent.GetCapabilities(device).ProductName}' ({how})"; }
+        catch { return $"#{device} ({how})"; }
     }
 
     private void OnDataAvailable(object? sender, WaveInEventArgs e)
