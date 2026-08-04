@@ -87,6 +87,32 @@ internal static class NativeMethods
     [DllImport("user32.dll")]
     public static extern bool GetCursorPos(out POINT lpPoint);
 
+    // Elevation probing. SendInput into a higher-integrity window is refused by
+    // UIPI, and the only useful thing we can tell the user is *why* — so we need
+    // to know whether the target process is elevated and we are not.
+    // PROCESS_QUERY_LIMITED_INFORMATION is deliberately the weakest right that
+    // still allows opening the token of a process we don't own.
+    public const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
+    public const uint TOKEN_QUERY = 0x0008;
+    public const int  TokenElevation = 20;   // TOKEN_INFORMATION_CLASS
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern IntPtr OpenProcess(uint dwDesiredAccess, bool bInheritHandle, uint dwProcessId);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool CloseHandle(IntPtr hObject);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool OpenProcessToken(IntPtr ProcessHandle, uint DesiredAccess, out IntPtr TokenHandle);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool GetTokenInformation(
+        IntPtr TokenHandle, int TokenInformationClass,
+        out uint TokenInformation, uint TokenInformationLength, out uint ReturnLength);
+
     [StructLayout(LayoutKind.Sequential)]
     public struct POINT
     {

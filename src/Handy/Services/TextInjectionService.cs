@@ -11,30 +11,71 @@ namespace Handy.Services;
 /// Writes a transcript into the foreground app using the method configured in
 /// AppSettings. Mirrors upstream's PasteMethod + ClipboardHandling + AutoSubmitKey.
 /// </summary>
+/// <summary>
+/// What happened to one paste attempt. <see cref="DeliveredChars"/> is only
+/// meaningful for the Direct method, where injection is per-character and can
+/// therefore be cut off part-way.
+/// </summary>
+public sealed record PasteResult(PasteOutcome Outcome, string? Detail = null, int DeliveredChars = 0)
+{
+    public bool Delivered => Outcome.IsDelivered();
+}
+
 public sealed class TextInjectionService
 {
-    public void Paste(string text, AppSettings settings)
+    /// <summary>
+    /// How often the Direct injection loop re-checks that focus hasn't moved.
+    /// Small enough that a steal costs a few characters, large enough that the
+    /// extra GetForegroundWindow calls don't show up in the latency budget.
+    /// </summary>
+    private const int FocusCheckEveryChars = 16;
+
+    /// <param name="intendedHwnd">
+    /// Window that had focus when the user started dictating, or 0 if unknown.
+    /// Anything else on screen at paste time is not where the text belongs.
+    /// </param>
+    public PasteResult Paste(string text, AppSettings settings, IntPtr intendedHwnd)
     {
-        if (string.IsNullOrEmpty(text)) return;
+        if (string.IsNullOrEmpty(text)) return new PasteResult(PasteOutcome.Delivered);
 
         var method = (settings.PasteMethod ?? "CtrlV").Trim();
         Log.Info($"Paste: method={method}, len={text.Length}, fg={DescribeForegroundWindow()}");
 
+        // Refuse to type into a window the user wasn't looking at. Injecting
+        // anyway is how a transcript ends up in a chat window, or split across
+        // two apps when the steal lands mid-injection.
+        var actualHwnd = NativeMethods.GetForegroundWindow();
+        if (PasteTargetPolicy.IsWrongWindow(intendedHwnd.ToInt64(), actualHwnd.ToInt64()))
+        {
+            var thief = DescribeWindow(actualHwnd);
+            Log.Warn($"Paste: target window changed since dictation started — not typing. " +
+                     $"intended=0x{intendedHwnd.ToInt64():X} actual={thief}");
+            return new PasteResult(PasteOutcome.WrongWindow, thief);
+        }
+
         if (string.Equals(method, "None", StringComparison.OrdinalIgnoreCase))
         {
             SendAutoSubmit(settings.AutoSubmitKey);
-            return;
+            return new PasteResult(PasteOutcome.Delivered);
         }
 
         if (string.Equals(method, "Direct", StringComparison.OrdinalIgnoreCase))
         {
             var citrix = IsCitrixForeground();
             var delay = citrix ? settings.DirectCharDelayMsCitrix : settings.DirectCharDelayMs;
-            var sent = SendUnicodeString(text, delay);
+            var sent = SendUnicodeString(text, delay, actualHwnd, out var charsDone, out var focusHeld);
             var directErr = Marshal.GetLastWin32Error();
-            Log.Info($"Paste: Direct SendInput events injected={sent} (expected={text.Length * 2}), lastErr={directErr}, citrix={citrix}, charDelayMs={delay}");
+            var expected = (uint)(charsDone * 2);
+            var outcome = PasteTargetPolicy.Classify(sent, expected, directErr, focusHeld);
+
+            Log.Info($"Paste: Direct SendInput events injected={sent} (expected={text.Length * 2}), " +
+                     $"chars={charsDone}/{text.Length}, lastErr={directErr}, citrix={citrix}, charDelayMs={delay}");
+
+            if (!outcome.IsDelivered())
+                return new PasteResult(outcome, DescribeFailure(outcome, actualHwnd, directErr), charsDone);
+
             SendAutoSubmit(settings.AutoSubmitKey);
-            return;
+            return new PasteResult(PasteOutcome.Delivered, null, charsDone);
         }
 
         // Clipboard-based paste: snapshot the original clipboard (if user wants it preserved),
@@ -47,23 +88,46 @@ public sealed class TextInjectionService
         {
             Log.Warn("Clipboard set failed; falling back to direct keystroke injection.");
             var citrix = IsCitrixForeground();
-            SendUnicodeString(text, citrix ? settings.DirectCharDelayMsCitrix : settings.DirectCharDelayMs);
+            var fallbackSent = SendUnicodeString(
+                text, citrix ? settings.DirectCharDelayMsCitrix : settings.DirectCharDelayMs,
+                actualHwnd, out var fallbackChars, out var fallbackFocusHeld);
+            var fallbackErr = Marshal.GetLastWin32Error();
+            var fallbackOutcome = PasteTargetPolicy.Classify(
+                fallbackSent, (uint)(fallbackChars * 2), fallbackErr, fallbackFocusHeld);
+            if (!fallbackOutcome.IsDelivered())
+                return new PasteResult(fallbackOutcome, DescribeFailure(fallbackOutcome, actualHwnd, fallbackErr), fallbackChars);
+
             SendAutoSubmit(settings.AutoSubmitKey);
-            return;
+            return new PasteResult(PasteOutcome.Delivered, null, fallbackChars);
         }
         Log.Info($"Paste: clipboard set ({text.Length} chars), method={method}, restoreAfter={restoreAfter}");
 
         if (settings.PasteDelayMs > 0)
             Thread.Sleep(settings.PasteDelayMs);
 
-        uint injected = method.ToLowerInvariant() switch
+        // The chord methods are a fixed, small number of events. Capture what we
+        // asked for so a refusal is detectable rather than assumed successful.
+        uint expectedChord;
+        uint injected;
+        switch (method.ToLowerInvariant())
         {
-            "shiftinsert" => SendShiftInsert(),
-            "ctrlshiftv"  => SendCtrlShiftV(),
-            _             => SendCtrlV(),
-        };
+            case "shiftinsert": injected = SendShiftInsert();  expectedChord = 4; break;
+            case "ctrlshiftv":  injected = SendCtrlShiftV();   expectedChord = 6; break;
+            default:            injected = SendCtrlV();        expectedChord = 4; break;
+        }
         var lastErr = Marshal.GetLastWin32Error();
-        Log.Info($"Paste: SendInput events injected={injected}, lastErr={lastErr}");
+        var chordOutcome = PasteTargetPolicy.Classify(injected, expectedChord, lastErr);
+        Log.Info($"Paste: SendInput events injected={injected} (expected={expectedChord}), lastErr={lastErr}");
+
+        // Restore the clipboard before returning on either path, or a failed
+        // paste would silently leave the user's previous clipboard destroyed.
+        // On failure we deliberately leave OUR text on the clipboard instead —
+        // that is the recovery route the caller tells the user about.
+        if (!chordOutcome.IsDelivered())
+        {
+            Log.Warn($"Paste: chord injection not accepted ({chordOutcome}); transcript left on the clipboard.");
+            return new PasteResult(chordOutcome, DescribeFailure(chordOutcome, actualHwnd, lastErr));
+        }
 
         SendAutoSubmit(settings.AutoSubmitKey);
 
@@ -73,6 +137,102 @@ public sealed class TextInjectionService
             Thread.Sleep(Math.Max(30, settings.PasteDelayMs));
             TrySetClipboard(previous);
         }
+
+        return new PasteResult(PasteOutcome.Delivered);
+    }
+
+    /// <summary>
+    /// Turns a failure into something worth showing a human. An elevated target
+    /// is the common, fixable case and deserves to be named explicitly rather
+    /// than surfacing as a bare error number.
+    /// </summary>
+    private static string DescribeFailure(PasteOutcome outcome, IntPtr target, int lastErr)
+    {
+        if (outcome == PasteOutcome.Interrupted)
+            return $"focus moved to {DescribeForegroundWindow()} during injection";
+
+        if (outcome is PasteOutcome.Refused or PasteOutcome.Partial
+            && IsElevationMismatch(target, out var targetName))
+        {
+            return $"{targetName} is running as administrator and Handy is not, " +
+                   $"so Windows blocked the keystrokes (lastErr={lastErr})";
+        }
+
+        return $"Windows did not accept the keystrokes (lastErr={lastErr})";
+    }
+
+    /// <summary>
+    /// True when the target window's process is elevated and ours isn't — the
+    /// UIPI case. Best-effort: any probing failure returns false rather than
+    /// guessing, so we never invent an explanation.
+    /// </summary>
+    private static bool IsElevationMismatch(IntPtr hwnd, out string targetName)
+    {
+        targetName = "that window";
+        try
+        {
+            if (hwnd == IntPtr.Zero) return false;
+            NativeMethods.GetWindowThreadProcessId(hwnd, out var pid);
+            if (pid == 0) return false;
+
+            try
+            {
+                using var p = Process.GetProcessById((int)pid);
+                targetName = p.ProcessName;
+            }
+            catch { }
+
+            if (!TryGetElevation(pid, out var targetElevated)) return false;
+            if (!TryGetElevation((uint)Environment.ProcessId, out var selfElevated)) return false;
+
+            return targetElevated && !selfElevated;
+        }
+        catch { return false; }
+    }
+
+    private static bool TryGetElevation(uint pid, out bool elevated)
+    {
+        elevated = false;
+        var process = NativeMethods.OpenProcess(NativeMethods.PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
+        if (process == IntPtr.Zero) return false;
+
+        var token = IntPtr.Zero;
+        try
+        {
+            if (!NativeMethods.OpenProcessToken(process, NativeMethods.TOKEN_QUERY, out token))
+                return false;
+            if (!NativeMethods.GetTokenInformation(
+                    token, NativeMethods.TokenElevation, out var value, sizeof(uint), out _))
+                return false;
+            elevated = value != 0;
+            return true;
+        }
+        finally
+        {
+            if (token != IntPtr.Zero) NativeMethods.CloseHandle(token);
+            NativeMethods.CloseHandle(process);
+        }
+    }
+
+    private static string DescribeWindow(IntPtr hwnd)
+    {
+        if (hwnd == IntPtr.Zero) return "(none)";
+        try
+        {
+            var title = new System.Text.StringBuilder(256);
+            NativeMethods.GetWindowText(hwnd, title, title.Capacity);
+            var cls = new System.Text.StringBuilder(128);
+            NativeMethods.GetClassName(hwnd, cls, cls.Capacity);
+
+            var name = string.Empty;
+            NativeMethods.GetWindowThreadProcessId(hwnd, out var pid);
+            if (pid != 0)
+            {
+                try { using var p = Process.GetProcessById((int)pid); name = p.ProcessName; } catch { }
+            }
+            return $"[{name}|{cls}|{title}|0x{hwnd.ToInt64():X}]";
+        }
+        catch (Exception ex) { return $"(err: {ex.Message})"; }
     }
 
     private static string? TryReadClipboard()
@@ -202,15 +362,41 @@ public sealed class TextInjectionService
         return sent;
     }
 
-    private static uint SendUnicodeString(string text, int charDelayMs)
+    /// <summary>
+    /// Types the transcript one character at a time, abandoning the attempt if
+    /// focus leaves <paramref name="expectedHwnd"/> part-way through.
+    ///
+    /// Without that check a long transcript is split between two windows: the
+    /// user gets half in their editor and half in whatever stole focus, with no
+    /// indication anything went wrong. The loop can run for a second or more
+    /// (length x charDelayMs), so the exposure is real, not theoretical.
+    /// </summary>
+    private static uint SendUnicodeString(
+        string text, int charDelayMs, IntPtr expectedHwnd, out int charsSent, out bool focusHeld)
     {
         Span<NativeMethods.INPUT> pair = stackalloc NativeMethods.INPUT[2];
         uint total = 0;
-        foreach (var ch in text)
+        charsSent = 0;
+        focusHeld = true;
+
+        for (var i = 0; i < text.Length; i++)
         {
-            pair[0] = Unicode(ch, true);
-            pair[1] = Unicode(ch, false);
+            if (expectedHwnd != IntPtr.Zero && i > 0 && i % FocusCheckEveryChars == 0)
+            {
+                var current = NativeMethods.GetForegroundWindow();
+                if (current != expectedHwnd)
+                {
+                    focusHeld = false;
+                    Log.Warn($"Paste: focus left the target after {charsSent}/{text.Length} chars " +
+                             $"(now {DescribeWindow(current)}); stopping injection.");
+                    break;
+                }
+            }
+
+            pair[0] = Unicode(text[i], true);
+            pair[1] = Unicode(text[i], false);
             total += NativeMethods.SendInput((uint)pair.Length, ref pair[0], NativeMethods.INPUT.Size);
+            charsSent++;
             if (charDelayMs > 0) Thread.Sleep(charDelayMs);
         }
         return total;

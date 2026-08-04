@@ -1,0 +1,14 @@
+<Window x:Class="Handy.HelpWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Handy.NET — Help"
+        Height="640" Width="760"
+        MinHeight="360" MinWidth="480"
+        WindowStartupLocation="CenterOwner"
+        Background="{StaticResource Brush.Background}">
+    <FlowDocumentScrollViewer x:Name="Viewer"
+                              VerticalScrollBarVisibility="Auto"
+                              HorizontalScrollBarVisibility="Auto"
+                              IsToolBarVisible="False"
+                              Background="{StaticResource Brush.Background}"/>
+</Window>
