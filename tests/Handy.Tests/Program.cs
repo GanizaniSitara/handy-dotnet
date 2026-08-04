@@ -127,8 +127,9 @@ AssertSpeculativeCachePolicy();
 AssertTranscriptSplicer();
 AssertTaskCaptureSettingsMigration();
 AssertTaskCaptureWriter();
+AssertPasteTargetPolicy();
 
-Console.WriteLine($"Handy fixture passed ({tests.Length} correction cases plus settings, prompt-builder, speculative, splicer, and task-capture checks).");
+Console.WriteLine($"Handy fixture passed ({tests.Length} correction cases plus settings, prompt-builder, speculative, splicer, task-capture, and paste-target checks).");
 
 static DomainCorrection Rule(
     string from,
@@ -339,6 +340,44 @@ static void AssertSpeculativeCachePolicy()
     AssertEqual(SpeculativeCachePolicy.Decision.ColdPass,
         SpeculativeCachePolicy.Decide(finalRawSampleCount: 96_000, snapshotRawSampleCount: 80_000, tailVadSampleCount: 0, off),
         "spec policy: feature flag off -> cold pass");
+}
+
+static void AssertPasteTargetPolicy()
+{
+    // Wrong-window detection. Unknown handles must not block a paste — we only
+    // refuse when we can actually prove the target moved.
+    AssertEqual(false, PasteTargetPolicy.IsWrongWindow(0x1234, 0x1234), "paste target: same window proceeds");
+    AssertEqual(true,  PasteTargetPolicy.IsWrongWindow(0x1234, 0x5678), "paste target: changed window refused");
+    AssertEqual(false, PasteTargetPolicy.IsWrongWindow(0, 0x5678), "paste target: unknown intended proceeds");
+    AssertEqual(false, PasteTargetPolicy.IsWrongWindow(0x1234, 0), "paste target: unknown actual proceeds");
+
+    // Delivery classification.
+    AssertEqual(PasteOutcome.Delivered, PasteTargetPolicy.Classify(sent: 800, expected: 800, lastErr: 0),
+        "paste classify: full injection delivered");
+    AssertEqual(PasteOutcome.Delivered, PasteTargetPolicy.Classify(sent: 0, expected: 0, lastErr: 0),
+        "paste classify: nothing to send is delivered");
+
+    // UIPI: an elevated target accepts nothing and reports access denied.
+    AssertEqual(PasteOutcome.Refused, PasteTargetPolicy.Classify(sent: 0, expected: 800, lastErr: 5),
+        "paste classify: elevated target refuses everything");
+    AssertEqual(PasteOutcome.Refused, PasteTargetPolicy.Classify(sent: 0, expected: 800, lastErr: 0),
+        "paste classify: zero accepted is a refusal even without an error code");
+    AssertEqual(PasteOutcome.Refused, PasteTargetPolicy.Classify(sent: 400, expected: 800, lastErr: 5),
+        "paste classify: partial with access-denied is a refusal");
+
+    // A short count with no access-denied is a partial write, not a refusal.
+    AssertEqual(PasteOutcome.Partial, PasteTargetPolicy.Classify(sent: 400, expected: 800, lastErr: 0),
+        "paste classify: short injection is partial");
+
+    // focusHeld:false wins over everything — it means we stopped deliberately.
+    AssertEqual(PasteOutcome.Interrupted,
+        PasteTargetPolicy.Classify(sent: 320, expected: 320, lastErr: 0, focusHeld: false),
+        "paste classify: focus loss mid-injection is an interruption");
+
+    AssertEqual(true,  PasteOutcome.Delivered.IsDelivered(), "paste outcome: delivered");
+    AssertEqual(false, PasteOutcome.WrongWindow.IsDelivered(), "paste outcome: wrong window not delivered");
+    AssertEqual("wrongWindow", PasteOutcome.WrongWindow.ToDiagToken(), "paste outcome: diag token");
+    AssertEqual("ok", PasteOutcome.Delivered.ToDiagToken(), "paste outcome: delivered diag token");
 }
 
 static void AssertTranscriptSplicer()

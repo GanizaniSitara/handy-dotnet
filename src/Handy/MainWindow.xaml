@@ -50,6 +50,11 @@
                     <Button Style="{StaticResource SecondaryButton}" Content="Minimize" Click="OnHide" Margin="0,0,8,0"/>
                     <Button Style="{StaticResource PrimaryButton}"   Content="Apply" Click="OnApply"/>
                 </StackPanel>
+                <!-- Help lives in the footer so it is reachable from every page.
+                     It used to exist only inside the Domain Terms section on the
+                     Advanced page, where nobody would think to look for it. -->
+                <Button DockPanel.Dock="Left" Style="{StaticResource SecondaryButton}"
+                        Content="Help" Click="OnOpenHelp" Margin="0,0,10,0"/>
                 <TextBlock x:Name="SaveStatusText" VerticalAlignment="Center" Margin="2,0,0,0"
                            Foreground="{StaticResource Brush.Success}" FontWeight="SemiBold"/>
             </DockPanel>
@@ -423,9 +428,12 @@
                                 </DataGrid>
                             </Border>
                             <Border Style="{StaticResource SettingsRow}">
-                                <TextBlock Style="{StaticResource Text.Hint}">
+                                <TextBlock Style="{StaticResource Text.Hint}" TextWrapping="Wrap">
                                     Canonical is the final spelling. Variants are what ASR hears. Require Any and Block are optional semicolon-separated context gates. Click Open help for examples.
                                 </TextBlock>
+                            </Border>
+                            <Border Style="{StaticResource SettingsRow}">
+                                <TextBlock x:Name="DomainTermsScopeHint" Style="{StaticResource Text.Hint}" TextWrapping="Wrap"/>
                             </Border>
                         </StackPanel>
                     </Border>
@@ -572,6 +580,9 @@
                                 </Grid>
                             </Border>
                             <Border Style="{StaticResource SettingsRow}">
+                                <TextBlock x:Name="BackendCostHint" Style="{StaticResource Text.Hint}"/>
+                            </Border>
+                            <Border Style="{StaticResource SettingsRow}">
                                 <Grid>
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="*"/>
@@ -607,11 +618,15 @@
                                         <ColumnDefinition Width="*"/>
                                         <ColumnDefinition Width="220"/>
                                     </Grid.ColumnDefinitions>
-                                    <TextBlock Grid.Column="0" Text="Vocabulary prompt" Style="{StaticResource Text.SettingLabel}"/>
+                                    <TextBlock Grid.Column="0" Text="Recognition biasing" Style="{StaticResource Text.SettingLabel}"
+                                               ToolTip="Whisper only. Feeds your Domain Terms to the recogniser as a vocabulary prompt so it is more likely to hear them correctly in the first place."/>
                                     <CheckBox Grid.Column="1" x:Name="WhisperPromptCheck"
-                                              Content="Use glossary terms"
+                                              Content="Bias with Domain Terms"
                                               VerticalAlignment="Center"/>
                                 </Grid>
+                            </Border>
+                            <Border Style="{StaticResource SettingsRow}">
+                                <TextBlock x:Name="BiasingAvailabilityHint" Style="{StaticResource Text.Hint}" TextWrapping="Wrap"/>
                             </Border>
                             <Border Style="{StaticResource SettingsRow}">
                                 <Grid>

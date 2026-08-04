@@ -5,8 +5,27 @@ systems, teams, and business phrases that speech recognition often gets wrong.
 
 They run after the raw transcript and normal filler-word cleanup. They do not
 teach Parakeet to hear differently; they rewrite the finished text when a rule
-matches. If you use Whisper, the Models tab can also use enabled canonical terms
-as an optional vocabulary prompt.
+matches.
+
+## Two Ways Your Terms Are Used
+
+Domain Terms feed two separate mechanisms. Knowing which is which explains why
+one of them is sometimes unavailable.
+
+**Corrections after transcription — every backend.** Your rules rewrite the
+finished text. This always runs, whichever backend you use, and is what the rest
+of this page describes.
+
+**Recognition biasing — Whisper only.** Whisper accepts a vocabulary prompt, so
+your canonical terms can be handed to the recogniser up front, making it more
+likely to hear them correctly in the first place. Enable it under **Recognition
+biasing** on the **Models** tab. Parakeet has no equivalent, so the option is
+disabled when Parakeet is selected. Your corrections still apply.
+
+The trade-off is speed. Parakeet transcribes a short clip in roughly 0.7 s;
+Whisper `tiny.en` takes about 1.5 s and `base` about 3 s. So biasing costs you
+noticeably slower dictation. If corrections alone get your terms right — and for
+most vocabularies they do — staying on Parakeet is the faster choice.
 
 ## Where To Find Them
 
