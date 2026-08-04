@@ -2,6 +2,7 @@ using System;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading;
 using System.Windows;
 using Handy.PInvoke;
 
@@ -45,6 +46,17 @@ public sealed class LowLevelKeyHookService : IDisposable
     private bool   _leftShiftDown, _rightShiftDown, _shiftDown;
     private bool   _leftWinDown,   _rightWinDown;
 
+    // Stuck-trigger watchdog. A UAC prompt switches Windows to the secure
+    // desktop, where this hook receives no events at all — so the key-up that
+    // ends a press can be missed entirely. In push-to-talk that leaves the app
+    // recording forever; in toggle mode it leaves _triggerActive stuck true,
+    // which silently swallows the *next* press. Polling the real key state
+    // recovers both without touching the normal event path.
+    private const int  StuckPollMs = 250;
+    private const int  StuckPollsBeforeRelease = 2;   // ~500 ms of "key is up"
+    private Timer? _stuckKeyTimer;
+    private int    _triggerUpPolls;
+
     public LowLevelKeyHookService()
     {
         _proc = HookCallback;
@@ -73,6 +85,41 @@ public sealed class LowLevelKeyHookService : IDisposable
         _hook = NativeMethods.SetWindowsHookEx(WH_KEYBOARD_LL, _proc, hMod, 0);
         if (_hook == IntPtr.Zero)
             Log.Error($"SetWindowsHookEx failed, error={Marshal.GetLastWin32Error()}");
+
+        _stuckKeyTimer ??= new Timer(_ => PollStuckTrigger(), null, StuckPollMs, StuckPollMs);
+    }
+
+    /// <summary>
+    /// Recovers from a trigger key-up we never saw. Only acts when the key is
+    /// observed physically up across consecutive polls, so a genuine hold is
+    /// never cut short.
+    /// </summary>
+    private void PollStuckTrigger()
+    {
+        try
+        {
+            if (!_triggerActive || _trigger.IsEmpty)
+            {
+                _triggerUpPolls = 0;
+                return;
+            }
+
+            var stillDown = (NativeMethods.GetAsyncKeyState((int)_trigger.Vk) & 0x8000) != 0;
+            if (stillDown)
+            {
+                _triggerUpPolls = 0;
+                return;
+            }
+
+            if (++_triggerUpPolls < StuckPollsBeforeRelease) return;
+
+            _triggerUpPolls = 0;
+            _triggerActive = false;
+            Log.Warn($"Trigger key '{_trigger.Display}' is physically up but no key-up was delivered " +
+                     $"(a UAC prompt or desktop switch can swallow it); releasing.");
+            DispatchTrigger(false);
+        }
+        catch (Exception ex) { Log.Error($"PollStuckTrigger: {ex.Message}"); }
     }
 
     private IntPtr HookCallback(int nCode, IntPtr wParam, IntPtr lParam)
@@ -291,6 +338,9 @@ public sealed class LowLevelKeyHookService : IDisposable
 
     public void Dispose()
     {
+        _stuckKeyTimer?.Dispose();
+        _stuckKeyTimer = null;
+
         if (_hook != IntPtr.Zero)
         {
             NativeMethods.UnhookWindowsHookEx(_hook);

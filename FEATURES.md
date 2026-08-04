@@ -1,108 +1,82 @@
-# Handy feature surface — port status
+# Handy.NET vs upstream Handy
 
-Tracking parity between upstream [Handy](https://github.com/cjpais/Handy)
-(Rust + Tauri) and this .NET port. Legend: ✅ implemented · 🔸 partial ·
-⏳ deferred · ❌ out of scope.
+Handy.NET is a .NET 8 / WPF reimplementation of [Handy](https://github.com/cjpais/Handy),
+which is written in Rust + Tauri. This document records what each project has
+that the other does not, so the trade-off in choosing one is explicit.
 
-## Deliberately not ported (with reasons)
+**Comparison drawn against upstream `b1b2d9f` (2026-08-03)** and Handy.NET
+`v0.2.52`. Upstream moves quickly — 110 commits landed between the original port
+point (`af6ec6c`, 2026-04-19) and this comparison. Re-check before relying on it.
 
-These upstream features are explicitly *not* planned for this port. Each has a
-concrete reason — either it fights the toolchain constraints the port was built
-to honour, or the value/cost ratio doesn't justify the work.
+Absence claims below were verified by searching upstream's `src-tauri/src/` at
+that commit, and are stated as "no equivalent found" rather than "does not
+exist" wherever a feature could plausibly be implemented under another name.
 
-| Feature | Status | Why not |
-|---|---|---|
-| Post-processing via LLM (OpenAI / Ollama / Apple Intelligence) | ❌ | Large feature surface (provider plumbing, prompt management, structured output). Out of scope for a dictation port. |
-| Apple Intelligence on-device LLM | ❌ | macOS-only, not applicable to a Windows .NET port. |
-| Chinese script conversion (`ferrous_opencc`) | ❌ | Niche, script-specific; Parakeet V3 handles multilingual natively. |
-| GPU / Metal / Vulkan / CUDA accelerator selection | ❌ | ONNX Runtime CPU is already ~13× realtime. Adding execution-provider plumbing (NVIDIA/DirectML) is a multi-day job for sub-second savings. |
-| Linux / macOS platform paths (xdotool, wtype, dotool, NSPanel) | ❌ | Windows port. |
-| Unix SIGUSR1/SIGUSR2 external triggers | ❌ | Windows doesn't have SIGUSR. Equivalent here is the `--toggle-transcription`/`--cancel` CLI flags, already implemented. |
-| Raycast integration | ❌ | macOS/Raycast-only. |
-| Signed updater (minisign / Tauri updater) | ❌ | No signing infra; corporate builds self-deploy. |
-| Clamshell / laptop lid detection for device routing | ❌ | Upstream uses macOS-specific APIs. |
-| Translate-to-English flag | ❌ | Parakeet has no translate head (Whisper does). |
+---
 
-## Held for later (tracked, not blocked)
+## Upstream has, Handy.NET does not
 
-| Feature | Why held |
+These are the reasons to prefer upstream.
+
+| Feature | Notes |
 |---|---|
-| Theme-aware tray icons (light/dark × idle/recording) | Needs artwork (4 icon PNGs). Trivial code, zero art. |
-| Mute-while-recording other apps | Requires `IAudioSessionManager2` COM interop, a few hundred lines of unmanaged plumbing for a minor polish feature. |
-| Unload-model / Model-select / Check-updates tray items | Model-select needs a settings refresh round-trip and UI affordance; low user impact vs. the settings screen that already covers it. |
-| Rich history entry pinning | Basic history is live (persist / copy / delete / clear). Pinning ("saved entries") is a secondary UX layer. |
-| Debug panel (Ctrl+Shift+D) | Settings screen already shows the live log; a dedicated panel adds little. |
-| Portable mode (redirect data dir next to exe) | Niche; %APPDATA% works for ~99% of installs. |
-| Sound-theme packs | Synthesised beeps cover the use case; custom WAV packs are cosmetic. |
-| Mute-while-recording | COM-heavy; see above. |
+| macOS and Linux | Handy.NET is Windows-only by design. The single biggest difference. |
+| LLM post-processing | Configurable providers, API keys, prompt library, structured output. Handy.NET has no LLM layer at all. |
+| GPU acceleration | Selectable transcription accelerator, ONNX Runtime execution provider, and GPU device index. Handy.NET is CPU-only. |
+| Localised UI | Full app translation plus translate-to-English. Handy.NET is English-only, though the filler-word filter is language-aware. |
+| Onboarding flow | Guided first-run setup with model download. Handy.NET drops the user straight into settings. |
+| Update checks and release notes | Handy.NET has no updater; releases are downloaded manually. |
+| Recording retention | Recordings stored and aged out on a retention policy. Handy.NET keeps transcripts only. |
+| Themes and sound themes | Handy.NET has one light theme and fixed beeps. |
+| Clipboard transaction paste | Delayed-rendering clipboard implementation behind `reliable_paste`, with clipboard image restore. Handy.NET uses a simpler set-and-chord approach. |
+| Audio device breadth | Output device and clamshell microphone selection, always-on microphone, lazy stream close. |
+| Mute while recording | Handy.NET does not mute other audio. |
+| Alternative input backends | Selectable keyboard implementation, typing tool, and an external-script hook. |
+| Overlay styles and visualiser | Handy.NET has a single overlay with level bars. |
 
-## Core pipeline
+## Handy.NET has, upstream does not
 
-- ✅ Global hotkey triggers a recording session — toggle or push-to-talk, rebindable.
-- ✅ Microphone capture via NAudio with device selection.
-- 🔸 Mute-while-recording — not implemented (upstream mutes other apps during capture).
-- ✅ Pre-roll / post-roll audio buffer — continuous ring keeps the last 3 s of mic audio; recording includes the configured ms before the hotkey press and after the release.
-- ✅ VAD (Silero v5 ONNX) trims leading/trailing silence pre-transcription. Configurable threshold + padding.
-- ✅ Local transcription via **Parakeet V2/V3 int8** (NeMo Conformer TDT) through ONNX Runtime.
-- ✅ Greedy RNN-T/TDT decoding — vocab logits only, matching the current transcribe-rs behaviour used by upstream Handy.
-- ✅ Whisper GGML backend via Whisper.net — tiny/base/small models, downloadable from the Models tab.
-- ✅ Optional Whisper vocabulary prompt generated from enabled domain-glossary canonical terms.
-- ❌ GPU/accelerator selection (Metal / Vulkan / CUDA) — CPU only.
-- ✅ In-app Parakeet V2/V3 model download from `blob.handy.computer`, tar.gz extracted via `System.Formats.Tar`.
-- ✅ Auto-discover upstream's Parakeet cache at `%APPDATA%\com.pais.handy\models\`.
-- ❌ Post-processing via OpenAI-compatible LLM (Ollama/OpenAI/Apple Intelligence).
-- ✅ Filler-word removal and stutter collapse ported from upstream.
-- ✅ Context-aware domain glossary correction after ASR/filtering: canonical term, variants, required/blocked context, case sensitivity, enabled state, notes.
-- ✅ Text injection — `CtrlV`, `Direct`, `CtrlShiftV`, `ShiftInsert`, `None`.
-- ✅ Configurable paste delay and trailing-space append.
-- ✅ Clipboard handling — `DontModify` restores the user's clipboard contents after paste; `CopyToClipboard` leaves the transcript there.
-- ✅ Always-copy-transcription option — leaves every successful transcript on the clipboard after paste.
-- ✅ Auto-submit key after paste — `None` / `Enter` / `CtrlEnter`.
-- 🔸 Decoder-level custom vocabulary — Whisper has prompt biasing; Parakeet's current ONNX greedy decoder has no prompt/hotword input, so Parakeet vocabulary adaptation needs NeMo phrase boosting or fine-tuning plus export/evaluation.
-- ❌ Translate-to-English flag (Parakeet does not expose a translate head).
-- ❌ Selected language override (Parakeet V3 is multilingual with auto-detect; V2 is English).
+These are the reasons to prefer this fork.
 
-## UI / shell
+| Feature | Notes |
+|---|---|
+| Paste target verification | Records the window that had focus when dictation began and refuses to type anywhere else, putting the transcript on the clipboard instead. No `GetForegroundWindow` or equivalent destination check was found anywhere in upstream's `src-tauri/src/`; upstream's paste work addresses clipboard mechanics, not destination identity. |
+| Mid-injection focus guard | Character-by-character injection re-checks focus as it types, so a focus change part-way through cannot split one transcript across two applications. |
+| Refused-input detection | A short injection count or `ERROR_ACCESS_DENIED` is reported rather than assumed successful, and an elevated (higher integrity level) target is named as the cause. |
+| Crash and session records | A marker file plus phase tracking distinguishes a crash from a clean exit and reports which pipeline stage was reached. No equivalent found upstream, which has debug and log-level settings but no session lifecycle record. |
+| Unfilterable lifecycle logging | Session and crash lines bypass the verbosity filter, so they cannot be silenced by a log-level setting. |
+| Per-dictation diagnostic line | One machine-parseable line per dictation covering every stage timing and the outcome. |
+| Speculative recognition | Decoding starts during natural pauses and splices a prefix with the tail on release, cutting perceived latency substantially on long dictations. No occurrences of "speculative" found upstream. |
+| Domain Terms with context gates | Corrections carry variants plus require-any and block context gates, so ambiguous phrases are rewritten only in the right context. Upstream's `custom_words` with a similarity threshold is a different, simpler design. |
+| Cancel during transcription | Escape discards a dictation at any point, including while decoding. |
+| Copy-last-transcript hotkey | Recovers the previous transcript without opening the history window. No equivalent found upstream. |
+| Stuck-trigger recovery | Polls real key state so a key-up swallowed by a UAC secure-desktop switch cannot leave the hotkey wedged. |
+| In-app help | Help renders inside the app rather than depending on a file association. |
+| Task capture | A second hotkey routes a dictation to a watched inbox folder instead of typing it. |
 
-- ✅ System tray icon.
-- ⏳ Theme-aware tray icon (light/dark swap).
-- ✅ Tray menu — Settings, History, Copy Last Transcript, Cancel, Quit. Status line shows recording state.
-- ⏳ Unload Model / Model Select / Check Updates menu items.
-- ✅ Recording overlay window — top / bottom / none, click-through, always-on-top.
-- ✅ Settings window — hotkey capture, PTT, paste method + delay, mic picker, overlay position, autostart, start-hidden, beeps toggle, trailing space, always-copy, domain glossary editor, backend/model selection, Whisper vocabulary prompt, **in-app Parakeet V2/V3 and Whisper download**.
-- ✅ Transcription history — persisted to `%APPDATA%\Handy\history.json`, with full browser UI (copy/delete/clear) reachable from tray *History…*.
-- ✅ Audio feedback sounds — synthesised start/stop/cancel tones via NAudio SignalGenerator.
-- ⏳ Sound-theme packs (upstream bundles multiple WAV sets).
-- ⏳ Debug mode panel (Ctrl+Shift+D) with verbose logs and audio dump.
+## Same feature, different behaviour
 
-## Platform / lifecycle
+Worth knowing when comparing bug reports between the two.
 
-- ✅ Single-instance enforcement — named mutex + named pipe for CLI forwarding.
-- ✅ CLI flags — `--toggle-transcription`, `--cancel`, `--show`, `--start-hidden`, `--no-tray`, `--transcribe-file <path>`, `--data-dir <path>`.
-- ✅ Autostart at login via HKCU Run key.
-- ✅ Start-hidden (tray-only) launch.
-- ⏳ Portable mode (redirect data dir next to binary).
-- ✅ File logging with rotation at 500 KB to `handy.log.1`; cross-process writes serialised via named mutex.
-- ❌ Opt-in signed updater (minisign/Tauri updater).
-- ❌ Unix SIGUSR1/SIGUSR2 handlers — Windows only.
-- ❌ Linux-specific paste fallbacks (xdotool / wtype / dotool) — Windows only.
-- ❌ macOS paste fallbacks / Apple Intelligence path — Windows only.
+| Area | Upstream | Handy.NET |
+|---|---|---|
+| Default paste method | Platform-dependent; `direct` was removed from the macOS UI | `Direct`, because terminals and TUIs intercept Ctrl+V |
+| Vocabulary handling | `custom_words` matched against a similarity threshold | Explicit correction rules with context gates |
+| Transcription engine | Whisper and Parakeet with GPU execution providers | Parakeet TDT int8 by default, Whisper available, CPU only |
+| Data directory | `%APPDATA%\com.pais.handy` | `%APPDATA%\Handy`, reusing upstream's model cache |
+| Log retention | Single rotation generation | Five generations, dated lines |
 
-## Settings surface
+---
 
-- ✅ Persistent JSON-backed settings store at `%APPDATA%\Handy\settings.json`.
-- ✅ Per-binding shortcut rebinding via UI capture.
-- ✅ Domain glossary rules persisted in settings.
-- ❌ Clamshell/laptop detection for device routing.
-- ❌ Raycast integration.
+## Deliberately not ported
 
-## Files written at runtime
+Recorded during the original port and re-checked at this comparison. These
+remain out of scope rather than pending: LLM post-processing, GPU execution
+providers, macOS and Linux support, the signed updater, and UI localisation.
+Each is a substantial subsystem whose value does not survive the fork's narrower
+goal — a dependency-light Windows dictation tool that builds with nothing but
+the .NET SDK.
 
-```
-%APPDATA%\Handy\
-├── settings.json       user config (JSON, round-trips unknown keys)
-├── handy.log           flat log (no rotation yet)
-├── history.json        transcript history
-├── last-transcript.txt only for --transcribe-file mode
-└── models\             drop Parakeet model dirs or Whisper GGML files here
-```
+Platform-specific upstream mechanisms have direct equivalents here rather than
+ports: Unix `SIGUSR1`/`SIGUSR2` external triggers correspond to the
+`--toggle-transcription` and `--cancel` CLI flags.
