@@ -35,16 +35,25 @@ public sealed class LowLevelKeyHookService : IDisposable
     private readonly NativeMethods.HookProc _proc;
     private IntPtr _hook;
 
+    private static readonly uint[] ModifierVks =
+    {
+        VK_LCONTROL, VK_RCONTROL, VK_CONTROL,
+        VK_LMENU,    VK_RMENU,    VK_MENU,
+        VK_LSHIFT,   VK_RSHIFT,   VK_SHIFT,
+        VK_LWIN,     VK_RWIN,
+    };
+
     private Hotkey _trigger;
     private Hotkey _taskCapture;
     private Hotkey _cancel;
     private Hotkey _copyLast;
     private bool   _triggerActive;
     private bool   _taskCaptureActive;
-    private bool   _leftCtrlDown,  _rightCtrlDown,  _ctrlDown;
-    private bool   _leftAltDown,   _rightAltDown,   _altDown;
-    private bool   _leftShiftDown, _rightShiftDown, _shiftDown;
-    private bool   _leftWinDown,   _rightWinDown;
+
+    // Per-entry latch state, indexed against ModifierVks, plus the consecutive
+    // count of polls where the latch disagreed with the physical key.
+    private readonly bool[] _modDown          = new bool[ModifierVks.Length];
+    private readonly int[]  _modDisagreePolls = new int[ModifierVks.Length];
 
     // Stuck-trigger watchdog. A UAC prompt switches Windows to the secure
     // desktop, where this hook receives no events at all — so the key-up that
@@ -86,7 +95,8 @@ public sealed class LowLevelKeyHookService : IDisposable
         if (_hook == IntPtr.Zero)
             Log.Error($"SetWindowsHookEx failed, error={Marshal.GetLastWin32Error()}");
 
-        _stuckKeyTimer ??= new Timer(_ => PollStuckTrigger(), null, StuckPollMs, StuckPollMs);
+        _stuckKeyTimer ??= new Timer(_ => { ReconcileModifiers(); PollStuckTrigger(); },
+                                     null, StuckPollMs, StuckPollMs);
     }
 
     /// <summary>
@@ -122,6 +132,60 @@ public sealed class LowLevelKeyHookService : IDisposable
         catch (Exception ex) { Log.Error($"PollStuckTrigger: {ex.Message}"); }
     }
 
+    /// <summary>
+    /// Reconciles the hook-tracked modifier latches against physical key state.
+    ///
+    /// The latches exist because a remoting layer can make GetAsyncKeyState
+    /// report a modifier as up at the instant the trigger key arrives, while
+    /// the hook itself saw it go down. But a latch is only ever cleared by a
+    /// key-up event, and a remote session that drops the up — on focus loss,
+    /// reconnect, or a chord consumed client-side — leaves it stuck down
+    /// forever. That silently turns a Ctrl+Space trigger into a bare Space one.
+    ///
+    /// Correcting only after consecutive disagreeing polls (~500 ms) keeps the
+    /// momentary-misreport case working while capping how long a stale latch
+    /// can survive. The correction runs both ways, so a modifier key-down the
+    /// hook never saw — app started with the key already held, or a desktop
+    /// switch swallowed it — heals instead of leaving the chord dead.
+    /// </summary>
+    private void ReconcileModifiers()
+    {
+        try
+        {
+            for (var i = 0; i < ModifierVks.Length; i++)
+            {
+                var vk = ModifierVks[i];
+                var physicallyDown = KeyIsDown(vk);
+                if (physicallyDown == _modDown[i])
+                {
+                    _modDisagreePolls[i] = 0;
+                    continue;
+                }
+
+                // Real hardware reports the side-specific key; the side-agnostic
+                // VKs only ever arrive as injected input. Never latch one of
+                // those from async state — GetAsyncKeyState reports the generic
+                // VK down whenever either side is held, so latching it would
+                // outlive the side entry's key-up by a poll interval and leave a
+                // window where a bare trigger key still matches.
+                if (physicallyDown && IsSideAgnostic(vk))
+                {
+                    _modDisagreePolls[i] = 0;
+                    continue;
+                }
+
+                if (++_modDisagreePolls[i] < StuckPollsBeforeRelease) continue;
+
+                _modDisagreePolls[i] = 0;
+                _modDown[i] = physicallyDown;
+                Log.Warn($"Modifier vk=0x{vk:X2} was tracked as {(physicallyDown ? "up" : "down")} " +
+                         $"but is physically {(physicallyDown ? "down" : "up")} " +
+                         $"(a remote session or desktop switch can swallow the event); correcting.");
+            }
+        }
+        catch (Exception ex) { Log.Error($"ReconcileModifiers: {ex.Message}"); }
+    }
+
     private IntPtr HookCallback(int nCode, IntPtr wParam, IntPtr lParam)
     {
         if (nCode < 0) return NativeMethods.CallNextHookEx(_hook, nCode, wParam, lParam);
@@ -151,7 +215,7 @@ public sealed class LowLevelKeyHookService : IDisposable
             {
                 var asyncMods = CurrentMods();
                 var trackedMods = TrackedMods();
-                var mods = asyncMods | trackedMods;
+                var mods = ObservedMods();
                 var fg = NativeMethods.GetForegroundWindow();
                 var title = new StringBuilder(256);
                 var cls   = new StringBuilder(128);
@@ -292,49 +356,47 @@ public sealed class LowLevelKeyHookService : IDisposable
 
     private static bool KeyIsDown(uint vk) => (NativeMethods.GetAsyncKeyState((int)vk) & 0x8000) != 0;
 
-    private Hotkey.Mods ObservedMods() => CurrentMods() | TrackedMods();
+    // Chord matching reads the tracked latches only. They are reconciled against
+    // physical key state by ReconcileModifiers, so OR-ing raw async state in here
+    // would just re-admit a stuck async modifier with no way to correct it.
+    private Hotkey.Mods ObservedMods() => TrackedMods();
 
     private Hotkey.Mods TrackedMods()
     {
         Hotkey.Mods m = 0;
-        if (_leftCtrlDown  || _rightCtrlDown  || _ctrlDown)  m |= Hotkey.Mods.Ctrl;
-        if (_leftAltDown   || _rightAltDown   || _altDown)   m |= Hotkey.Mods.Alt;
-        if (_leftShiftDown || _rightShiftDown || _shiftDown) m |= Hotkey.Mods.Shift;
-        if (_leftWinDown   || _rightWinDown)                 m |= Hotkey.Mods.Win;
+        for (var i = 0; i < ModifierVks.Length; i++)
+            if (_modDown[i]) m |= ModFlagFor(ModifierVks[i]);
         return m;
     }
 
     private void UpdateModifierState(uint vk, bool isDown)
     {
-        switch (vk)
-        {
-            case VK_LCONTROL: _leftCtrlDown = isDown; break;
-            case VK_RCONTROL: _rightCtrlDown = isDown; break;
-            case VK_CONTROL:  _ctrlDown = isDown; break;
-            case VK_LMENU:    _leftAltDown = isDown; break;
-            case VK_RMENU:    _rightAltDown = isDown; break;
-            case VK_MENU:     _altDown = isDown; break;
-            case VK_LSHIFT:   _leftShiftDown = isDown; break;
-            case VK_RSHIFT:   _rightShiftDown = isDown; break;
-            case VK_SHIFT:    _shiftDown = isDown; break;
-            case VK_LWIN:     _leftWinDown = isDown; break;
-            case VK_RWIN:     _rightWinDown = isDown; break;
-        }
+        var i = Array.IndexOf(ModifierVks, vk);
+        if (i < 0) return;
+
+        _modDown[i] = isDown;
+        _modDisagreePolls[i] = 0;
     }
 
     private void ResetTrackedModifiers()
     {
-        _leftCtrlDown = _rightCtrlDown = _ctrlDown = false;
-        _leftAltDown = _rightAltDown = _altDown = false;
-        _leftShiftDown = _rightShiftDown = _shiftDown = false;
-        _leftWinDown = _rightWinDown = false;
+        Array.Clear(_modDown);
+        Array.Clear(_modDisagreePolls);
     }
 
-    private static bool IsModifier(uint vk) =>
-        vk == VK_LCONTROL || vk == VK_RCONTROL || vk == VK_CONTROL ||
-        vk == VK_LMENU    || vk == VK_RMENU    || vk == VK_MENU    ||
-        vk == VK_LSHIFT   || vk == VK_RSHIFT   || vk == VK_SHIFT   ||
-        vk == VK_LWIN     || vk == VK_RWIN;
+    private static Hotkey.Mods ModFlagFor(uint vk) => vk switch
+    {
+        VK_LCONTROL or VK_RCONTROL or VK_CONTROL => Hotkey.Mods.Ctrl,
+        VK_LMENU    or VK_RMENU    or VK_MENU    => Hotkey.Mods.Alt,
+        VK_LSHIFT   or VK_RSHIFT   or VK_SHIFT   => Hotkey.Mods.Shift,
+        VK_LWIN     or VK_RWIN                   => Hotkey.Mods.Win,
+        _                                        => 0,
+    };
+
+    private static bool IsSideAgnostic(uint vk) =>
+        vk == VK_CONTROL || vk == VK_MENU || vk == VK_SHIFT;
+
+    private static bool IsModifier(uint vk) => Array.IndexOf(ModifierVks, vk) >= 0;
 
     public void Dispose()
     {
