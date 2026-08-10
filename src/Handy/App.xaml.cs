@@ -500,6 +500,14 @@ public partial class App : Application
         _captureWatchdog.Start();
     }
 
+    /// <summary>Sample count to milliseconds at the fixed 16 kHz capture rate.
+    ///
+    /// The widening cast is the whole point: <c>samples * 1000</c> overflows int32
+    /// once samples exceeds 2 147 483, which is only 2 min 14 s of audio, and the
+    /// result silently wraps to a large negative. Every caller goes through here so
+    /// the cast cannot be forgotten at one site and not another.</summary>
+    private static long SamplesToMs(int samples) => (long)samples * 1000 / 16000;
+
     private void StopCaptureWatchdog()
     {
         if (_captureWatchdog is null) return;
@@ -989,8 +997,15 @@ public partial class App : Application
         if (recStartTicks > 0)
             heldMs = (Stopwatch.GetTimestamp() - recStartTicks) * 1000 / Stopwatch.Frequency;
 
-        int audioMs = rawSamples * 1000 / 16000;
-        int vadOutMs = vadOutSamples * 1000 / 16000;
+
+        // Widen BEFORE the multiply. int32 overflows at rawSamples * 1000 >
+        // 2 147 483 647, i.e. 2 147 483 samples = 2 min 14 s at 16 kHz, after
+        // which these read as large negatives — the 21-minute capture that
+        // motivated the capture watchdog logged audioMs=-98727. The diagnostics
+        // were therefore wrong for exactly the long sessions they were needed
+        // for, and MaxRecordingMs (5 min) is itself past the threshold.
+        long audioMs = SamplesToMs(rawSamples);
+        long vadOutMs = SamplesToMs(vadOutSamples);
         Log.Info($"Diag: heldMs={heldMs} audioMs={audioMs} samples={rawSamples} " +
                  $"vadOutSamples={vadOutSamples} vadOutMs={vadOutMs} finalSamples={finalSamples} " +
                  $"asrMs={asrMs} rawLen={rawLen} filtLen={filtLen} " +
@@ -1486,7 +1501,7 @@ public partial class App : Application
                 ? whisperModel
                 : DescribeParakeetModelName(parakeetModelDir).Replace(' ', '_');
             Log.Info($"--transcribe-file: diag backend={backend} model={benchModel} " +
-                     $"audioMs={rawSamples * 1000 / 16000} samples={rawSamples} vadOutSamples={samples.Length} vadOutMs={samples.Length * 1000 / 16000} " +
+                     $"audioMs={SamplesToMs(rawSamples)} samples={rawSamples} vadOutSamples={samples.Length} vadOutMs={SamplesToMs(samples.Length)} " +
                      $"loadMs={loadSw.ElapsedMilliseconds} wavMs={wavSw.ElapsedMilliseconds} vadMs={vadMs} " +
                      $"asrMs={asrSw.ElapsedMilliseconds} postMs={postSw.ElapsedMilliseconds} totalMs={totalSw.ElapsedMilliseconds} " +
                      $"rawLen={(raw ?? string.Empty).Length} filtLen={text.Length}");
