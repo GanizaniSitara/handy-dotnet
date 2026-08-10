@@ -92,6 +92,21 @@ public sealed class AppSettings
     /// Default 30 000 ms (30 s) — effectively unlimited for normal dictation use.</summary>
     public int VadMaxSilenceMs { get; set; } = 30_000;
 
+    /// <summary>Auto-stop a recording that has received NO audio at all for this long,
+    /// measured from the moment recording started, and DISCARD it. Guards a wedged or
+    /// disconnected microphone: the device accepts StartRecording but never delivers a
+    /// callback, so the session would otherwise sit open indefinitely with an empty buffer.
+    /// Distinct from <see cref="VadMaxSilenceMs"/>, which closes a speech SEGMENT once audio
+    /// IS flowing. 0 disables the guard.</summary>
+    public int NoInputTimeoutMs { get; set; } = 15_000;
+
+    /// <summary>Hard ceiling on a single recording, regardless of input, after which the
+    /// capture is stopped and TRANSCRIBED normally. Guards a stop event that never arrives —
+    /// a swallowed key-up under Splashtop/Citrix, or toggle mode where nothing but a second
+    /// press ends the session. The audio is real in that case, so it is kept rather than
+    /// discarded. 0 disables the guard.</summary>
+    public int MaxRecordingMs { get; set; } = 300_000;
+
     /// <summary>Extra audio included from BEFORE the hotkey press. Catches the first syllable.</summary>
     public int PreRollMs { get; set; } = 250;
 
