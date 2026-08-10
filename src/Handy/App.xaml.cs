@@ -81,6 +81,14 @@ public partial class App : Application
     private const int TailLookbackSamples = 16000 * 4 / 5; // 800 ms at 16 kHz
 
     private CancellationTokenSource? _specCts;
+    // Watchdog against a recording that starts but never ends. Two distinct
+    // failure modes, hence two bounds: audio never arrives (wedged mic), or the
+    // stop event never arrives (key-up swallowed by a remote session, or toggle
+    // mode with no second press). _lastLevelsTicks is written from the capture
+    // thread and read on the UI thread, so it goes through Interlocked.
+    private DispatcherTimer? _captureWatchdog;
+    private long _lastLevelsTicks;
+
     private long _lastNonSilentTicks;
     private long _lastSpecSnapshotSamples;
     private int _specInFlight;
@@ -192,6 +200,11 @@ public partial class App : Application
         _vad = new SileroVadService(Path.Combine(_dataDir, "models", "silero_vad.onnx"));
         _audio = new AudioCaptureService(_settings.MicrophoneDeviceName);
         _audio.OnLevels += levels => _overlay?.SetLevels(levels);
+        // Unconditional liveness stamp. OnLevels only fires while a recording is
+        // active, so "time since the last one" is exactly "how long the capture
+        // has been silent at the device level". Kept separate from the
+        // speculative handler, which is gated behind an opt-in setting.
+        _audio.OnLevels += _ => Interlocked.Exchange(ref _lastLevelsTicks, Stopwatch.GetTimestamp());
         _audio.OnLevels += OnAudioLevelsForSpeculative;
         _audio.Initialize(); // start continuous capture for pre-roll
         _injector = new TextInjectionService();
@@ -454,7 +467,77 @@ public partial class App : Application
         ShowOverlay(RecordingOverlay.State.Recording);
         _feedback?.PlayStart();
         _audio!.Start(_settings.PreRollMs);
+        StartCaptureWatchdog();
         Log.Info($"Recording started destination={destination} (pre-roll {_settings.PreRollMs} ms).");
+    }
+
+    /// <summary>Bound the lifetime of a recording that never ends on its own.
+    ///
+    /// Two independent failures put the app in that state, and they want opposite
+    /// treatment. A wedged microphone delivers no callbacks at all, so there is
+    /// nothing worth keeping — stop and discard. A swallowed key-up (Splashtop,
+    /// Citrix) or a toggle-mode session with no second press leaves a perfectly
+    /// good capture running, so the cap stops it and transcribes what it has;
+    /// discarding there would throw away real dictation.
+    ///
+    /// Both stops route through the ordinary paths rather than reaching into the
+    /// audio service, so tray, overlay and generation state stay consistent with a
+    /// user-initiated stop.</summary>
+    private void StartCaptureWatchdog()
+    {
+        StopCaptureWatchdog();
+        if (_settings.NoInputTimeoutMs <= 0 && _settings.MaxRecordingMs <= 0) return;
+
+        // No callback has arrived yet; measure the no-input window from the start
+        // of the recording rather than from a stale stamp left by the last one.
+        Interlocked.Exchange(ref _lastLevelsTicks, Stopwatch.GetTimestamp());
+
+        _captureWatchdog = new DispatcherTimer(DispatcherPriority.Background)
+        {
+            Interval = TimeSpan.FromSeconds(1),
+        };
+        _captureWatchdog.Tick += (_, _) => CheckCaptureWatchdog();
+        _captureWatchdog.Start();
+    }
+
+    private void StopCaptureWatchdog()
+    {
+        if (_captureWatchdog is null) return;
+        _captureWatchdog.Stop();
+        _captureWatchdog = null;
+    }
+
+    private void CheckCaptureWatchdog()
+    {
+        if (!_recording) { StopCaptureWatchdog(); return; }
+
+        var now = Stopwatch.GetTimestamp();
+        var elapsedMs = (now - _recStartTicks) * 1000 / Stopwatch.Frequency;
+
+        if (_settings.MaxRecordingMs > 0 && elapsedMs >= _settings.MaxRecordingMs)
+        {
+            StopCaptureWatchdog();
+            Log.Warn($"Recording hit the {_settings.MaxRecordingMs} ms ceiling and was stopped " +
+                     $"automatically — the stop event never arrived (a swallowed key-up under a " +
+                     $"remote session, or toggle mode with no second press). Transcribing what was captured.");
+            _tray?.Notify("Handy.NET", "Recording hit the time limit and was stopped. Transcribing what was captured.");
+            StopAndTranscribe();
+            return;
+        }
+
+        var sinceLevelsMs = (now - Interlocked.Read(ref _lastLevelsTicks)) * 1000 / Stopwatch.Frequency;
+        if (_settings.NoInputTimeoutMs > 0 && sinceLevelsMs >= _settings.NoInputTimeoutMs)
+        {
+            StopCaptureWatchdog();
+            Log.Warn($"No audio for {sinceLevelsMs} ms since the recording started — the microphone " +
+                     $"is selected but delivering nothing. Stopping and discarding. Check the device " +
+                     $"is connected and selected in Settings.");
+            _tray?.Notify("Handy.NET", "No audio from the microphone — recording discarded. Check the device in Settings.");
+            // Stamp the cancel the same way Escape does, so StopAndTranscribe
+            // tears down without running ASR on an empty buffer.
+            _cancelledGeneration = _dictationGeneration;
+            StopAndTranscribe();
+        }
     }
 
     private void ResetSpeculativeState()
@@ -563,6 +646,7 @@ public partial class App : Application
     private async void StopAndTranscribe()
     {
         _recording = false;
+        StopCaptureWatchdog();
         // Claim the transcribing state immediately. The StopAsync await below
         // takes postRollMs (200 ms by default), and until this was set here that
         // window belonged to neither flag — an Escape pressed just after release
