@@ -58,12 +58,12 @@ Add:
 
 | On | Canonical | Variants | Require Any | Block | Case | Notes |
 |---|---|---|---|---|---|---|
-| checked | Open Moniker | open monica; open monarch |  |  | unchecked | Project name |
+| checked | Project Aurora | project or aura; project a roar |  |  | unchecked | Project name |
 
 Output becomes:
 
 ```text
-Open Moniker needs better matching
+Project Aurora needs better matching
 ```
 
 ## Context Example
@@ -100,9 +100,9 @@ Use **Block** when a correction is usually right but has a known false-positive.
 
 | On | Canonical | Variants | Require Any | Block | Case | Notes |
 |---|---|---|---|---|---|---|
-| checked | PIMCO | pim co; pinko |  | politics; political | unchecked | Avoid changing political words |
+| checked | Northstar | north star; north's tar |  | astronomy; constellation | unchecked | Avoid changing astronomy terms |
 
-If the surrounding text mentions `politics` or `political`, this rule is skipped.
+If the surrounding text mentions `astronomy` or `constellation`, this rule is skipped.
 
 ## Matching Rules
 
