@@ -29,6 +29,8 @@ public sealed class PreviousSession
     public DateTime StartedUtc { get; set; }
     public DateTime HeartbeatUtc { get; set; }
     public string Phase { get; set; } = nameof(SessionPhase.Idle);
+    public long WorkingSetBytes { get; set; }
+    public long GcTotalMemoryBytes { get; set; }
 }
 
 /// <summary>
@@ -43,6 +45,11 @@ public sealed class SessionTracker : IDisposable
 {
     private const string FileName = "session.json";
     private static readonly TimeSpan HeartbeatInterval = TimeSpan.FromSeconds(30);
+
+    // A dictation tool has no business anywhere near this. Past it, a leak is
+    // starving the rest of the machine — surface that in the log within a
+    // heartbeat instead of leaving it to be noticed by symptom hours later.
+    private const long MemoryWarnThresholdBytes = 2L * 1024 * 1024 * 1024;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -60,6 +67,7 @@ public sealed class SessionTracker : IDisposable
 
     private SessionPhase _phase = SessionPhase.Idle;
     private bool _closed;
+    private bool _memoryWarned;
 
     public string SessionId => _sessionId;
 
@@ -124,19 +132,31 @@ public sealed class SessionTracker : IDisposable
 
     private void Write()
     {
+        var workingSet = Environment.WorkingSet;
+
         PreviousSession snapshot;
         lock (_lock)
         {
             if (_closed) return;
             snapshot = new PreviousSession
             {
-                SessionId    = _sessionId,
-                Version      = _version,
-                Pid          = Environment.ProcessId,
-                StartedUtc   = _startedUtc,
-                HeartbeatUtc = DateTime.UtcNow,
-                Phase        = _phase.ToString(),
+                SessionId          = _sessionId,
+                Version            = _version,
+                Pid                = Environment.ProcessId,
+                StartedUtc         = _startedUtc,
+                HeartbeatUtc       = DateTime.UtcNow,
+                Phase              = _phase.ToString(),
+                WorkingSetBytes    = workingSet,
+                GcTotalMemoryBytes = GC.GetTotalMemory(forceFullCollection: false),
             };
+
+            if (!_memoryWarned && workingSet > MemoryWarnThresholdBytes)
+            {
+                _memoryWarned = true;
+                Log.Warn($"Session {_sessionId} working set is {workingSet / 1024 / 1024} MB, " +
+                         $"past the {MemoryWarnThresholdBytes / 1024 / 1024} MB watchdog threshold " +
+                         "— restart Handy to release it.");
+            }
         }
 
         try

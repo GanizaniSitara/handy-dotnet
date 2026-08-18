@@ -24,6 +24,12 @@ public sealed class AudioCaptureService : IDisposable
     private const int RingSeconds = 3;   // covers any reasonable pre-roll + slack
     private const int CaptureStaleRestartMs = 750;
 
+    // MemoryStream.SetLength(0) never shrinks Capacity — one unusually long
+    // dictation would otherwise keep every later recording carrying that
+    // high-water-mark array around for the rest of the session. 10 minutes
+    // of 16kHz/16-bit mono is a generous ceiling for a single utterance.
+    private const int MaxRecBufferCapacityBytes = 10 * 60 * BytesPerSec;
+
     private readonly object _lock = new();
     private readonly byte[] _ring = new byte[BytesPerSec * RingSeconds];
     private long _writePos;              // absolute byte count
@@ -31,7 +37,7 @@ public sealed class AudioCaptureService : IDisposable
     private WaveInEvent? _wave;
 
     private bool _recording;
-    private readonly MemoryStream _recBuffer = new();
+    private MemoryStream _recBuffer = new();
 
     /// <summary>
     /// Fires per captured block (~50 ms) while recording. Payload is an array
@@ -65,6 +71,25 @@ public sealed class AudioCaptureService : IDisposable
     }
 
     /// <summary>
+    /// Reset the recording buffer for reuse. Must be called under <see cref="_lock"/>.
+    /// A plain SetLength(0) never releases Capacity, so one long dictation would
+    /// otherwise keep its high-water-mark array alive for every short one after
+    /// it; past the ceiling, drop it and start a fresh MemoryStream instead.
+    /// </summary>
+    private void ResetRecBuffer()
+    {
+        if (_recBuffer.Capacity > MaxRecBufferCapacityBytes)
+        {
+            _recBuffer.Dispose();
+            _recBuffer = new MemoryStream();
+        }
+        else
+        {
+            _recBuffer.SetLength(0);
+        }
+    }
+
+    /// <summary>
     /// Mark the start of a recording. The returned samples will include the
     /// last <paramref name="preRollMs"/> milliseconds captured BEFORE this call.
     /// </summary>
@@ -74,13 +99,23 @@ public sealed class AudioCaptureService : IDisposable
 
         lock (_lock)
         {
-            _recBuffer.SetLength(0);
+            ResetRecBuffer();
             var preRollBytes = Math.Clamp(preRollMs, 0, RingSeconds * 1000) * BytesPerSec / 1000;
             var recStart = Math.Max(0, _writePos - preRollBytes);
             var preRoll = ExtractUnlocked(recStart, _writePos);
             if (preRoll.Length > 0) _recBuffer.Write(preRoll, 0, preRoll.Length);
             _recording = true;
         }
+    }
+
+    /// <summary>
+    /// Sample count captured in the current recording so far — O(1), no copy.
+    /// Lets callers decide whether enough new audio has arrived to justify the
+    /// cost of <see cref="SnapshotCurrentRecording"/> before paying for it.
+    /// </summary>
+    public int RecordingSampleCount
+    {
+        get { lock (_lock) { return _recording ? (int)(_recBuffer.Length / 2) : 0; } }
     }
 
     /// <summary>
@@ -92,14 +127,21 @@ public sealed class AudioCaptureService : IDisposable
     public float[] SnapshotCurrentRecording()
     {
         byte[] pcm;
+        int pcmLen;
         lock (_lock)
         {
             if (!_recording) return Array.Empty<float>();
-            pcm = _recBuffer.ToArray();
+            // GetBuffer() hands back the MemoryStream's own internal array
+            // instead of ToArray()'s full copy — halves the bytes copied on
+            // every speculative pass. Safe to read outside the lock: writes
+            // only ever append past pcmLen, and growth reallocates a new
+            // internal array rather than mutating bytes we've already read.
+            pcm = _recBuffer.GetBuffer();
+            pcmLen = (int)_recBuffer.Length;
         }
 
-        var samples = new float[pcm.Length / 2];
-        for (int i = 0, j = 0; i < pcm.Length - 1; i += 2, j++)
+        var samples = new float[pcmLen / 2];
+        for (int i = 0, j = 0; i < pcmLen - 1; i += 2, j++)
         {
             short s = (short)(pcm[i] | (pcm[i + 1] << 8));
             samples[j] = s / 32768f;
@@ -121,7 +163,7 @@ public sealed class AudioCaptureService : IDisposable
             if (!_recording) return Array.Empty<float>();
             _recording = false;
             pcm = _recBuffer.ToArray();
-            _recBuffer.SetLength(0);
+            ResetRecBuffer();
         }
 
         // A recording that captured nothing means the device accepted
@@ -157,7 +199,7 @@ public sealed class AudioCaptureService : IDisposable
                 Array.Clear(_ring);
                 _writePos = 0;
                 _lastDataTicks = 0;
-                _recBuffer.SetLength(0);
+                ResetRecBuffer();
             }
         }
         try { old?.StopRecording(); } catch { }

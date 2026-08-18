@@ -30,8 +30,12 @@ internal static class Log
 
     private static StreamWriter? _file;
     private static Mutex?        _writeMutex;
+    private static string?       _path;
 
-    private static LogVerbosity _fileVerbosity = LogVerbosity.Debug;
+    // Debug logs a line per keypress — thousands of writes a minute over a long
+    // session. Normal is what a user actually wants on disk by default; Debug
+    // is still there for whoever explicitly turns it on to troubleshoot.
+    private static LogVerbosity _fileVerbosity = LogVerbosity.Normal;
     private static LogVerbosity _displayVerbosity = LogVerbosity.Normal;
 
     public static Action<string>? Sink;
@@ -79,10 +83,14 @@ internal static class Log
     {
         try
         {
+            _path = path;
             RotateIfNeeded(path);
 
             var fs = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.ReadWrite);
-            _file = new StreamWriter(fs) { AutoFlush = true };
+            // AutoFlush was a synchronous disk flush per line — fine at the old
+            // Debug-default firehose volume, wasteful at Normal. Write() flushes
+            // explicitly for the lines that must survive a crash instead.
+            _file = new StreamWriter(fs) { AutoFlush = false };
 
             _writeMutex = new Mutex(initiallyOwned: false, name: MutexName);
         }
@@ -117,11 +125,17 @@ internal static class Log
 
         if (_file is not null && (alwaysPass || (int)category <= (int)_fileVerbosity))
         {
+            // Session lifecycle and WARN/ERROR are the lines an incident report
+            // depends on — force those to disk immediately. Routine INFO can
+            // wait for the StreamWriter's own buffer to fill.
+            var mustSurviveCrash = alwaysPass || category == LogVerbosity.Always;
             var held = false;
             try
             {
                 held = _writeMutex?.WaitOne(100) ?? false;
+                MaybeRotate();
                 _file.WriteLine(line);
+                if (mustSurviveCrash) _file.Flush();
             }
             catch (Exception ex) { Console.Error.WriteLine($"Log write failed: {ex.Message}"); }
             finally { if (held) { try { _writeMutex!.ReleaseMutex(); } catch { } } }
@@ -129,6 +143,33 @@ internal static class Log
 
         if (alwaysPass || (int)category <= (int)_displayVerbosity)
             Sink?.Invoke(line);
+    }
+
+    // RotateIfNeeded previously only ran once, at Init() — so a session that
+    // stayed open for hours never rotated again and the 500KB cap went
+    // unenforced. Check on every write instead; if a rotation actually
+    // happens, the old handle is now pointing at the renamed file, so reopen
+    // a fresh one at the live path. Must be called while holding _writeMutex.
+    private static void MaybeRotate()
+    {
+        if (_path is null || _file is null) return;
+
+        FileInfo fi;
+        try { fi = new FileInfo(_path); }
+        catch { return; }
+        if (!fi.Exists || fi.Length < MaxBytes) return;
+
+        try
+        {
+            _file.Dispose();
+            RotateIfNeeded(_path);
+            var fs = new FileStream(_path, FileMode.Append, FileAccess.Write, FileShare.ReadWrite);
+            _file = new StreamWriter(fs) { AutoFlush = false };
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"Log rotate-on-write failed: {ex.Message}");
+        }
     }
 
     private static void RotateIfNeeded(string path)

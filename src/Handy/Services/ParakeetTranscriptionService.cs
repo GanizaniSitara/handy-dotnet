@@ -64,7 +64,17 @@ public sealed class ParakeetTranscriptionService : ITranscriptionService
             {
                 GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL,
                 InterOpNumThreads = 1,
-                IntraOpNumThreads = 0, // 0 = let ORT pick
+                // Pinned rather than 0 ("let ORT pick"): an unbounded IntraOp
+                // count multiplies the per-thread CPU arena below across every
+                // thread ORT spins up.
+                IntraOpNumThreads = 4,
+                // The CPU arena grows to the largest input it has ever seen and
+                // never releases it back to the OS. Each speculative pass feeds
+                // a longer prefix than the last, so over a long session the
+                // arena only ratchets upward. Disabling it costs a bit of
+                // per-call allocation overhead in exchange for not holding a
+                // session's high-water mark for its entire lifetime.
+                EnableCpuMemArena = false,
             };
 
             var sw = Stopwatch.StartNew();
