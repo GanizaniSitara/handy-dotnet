@@ -599,13 +599,15 @@ public partial class App : Application
         try
         {
             if (_audio is null) return;
-            var snapshot = _audio.SnapshotCurrentRecording();
             // Need at least minNewSpeechMs of additional audio since last snapshot
-            // to justify spending another ASR cycle.
+            // to justify spending another ASR cycle. Check the cheap sample count
+            // BEFORE paying for SnapshotCurrentRecording's full-buffer copy, so a
+            // pass that's going to bail out here costs nothing.
             var minNewSamples = _settings.BackgroundMinNewSpeechMs * 16;
-            if (snapshot.Length - _lastSpecSnapshotSamples < minNewSamples) return;
+            if (_audio.RecordingSampleCount - _lastSpecSnapshotSamples < minNewSamples) return;
             if (token.IsCancellationRequested) return;
 
+            var snapshot = _audio.SnapshotCurrentRecording();
             _specStartedCount++;
             _lastSpecSnapshotSamples = snapshot.Length;
 
