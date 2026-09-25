@@ -64,8 +64,8 @@ public sealed class AppSettings
     public bool AlwaysCopyTranscriptToClipboard { get; set; } = false;
 
     /// <summary>Action to take if the foreground window changes between dictation start and paste:
-    /// RefuseAndCopy (default) | RestoreAndPaste | PasteAnyway.</summary>
-    public string PasteFocusPolicy { get; set; } = "RefuseAndCopy";
+    /// RestoreAndPaste (default) | RefuseAndCopy | PasteAnyway.</summary>
+    public string PasteFocusPolicy { get; set; } = "RestoreAndPaste";
 
     /// <summary>None | Enter | CtrlEnter.</summary>
     public string AutoSubmitKey { get; set; } = "None";
@@ -248,7 +248,7 @@ public sealed class AppSettings
 
         s.DomainCorrections ??= new List<DomainCorrection>();
         if (string.IsNullOrWhiteSpace(s.PasteFocusPolicy))
-            s.PasteFocusPolicy = "RefuseAndCopy";
+            s.PasteFocusPolicy = "RestoreAndPaste";
 
         if (!hasTaskCaptureHotkey &&
             string.Equals(s.Hotkey, "Ctrl+Alt+Space", StringComparison.OrdinalIgnoreCase))

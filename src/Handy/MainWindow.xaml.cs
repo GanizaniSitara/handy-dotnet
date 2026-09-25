@@ -270,7 +270,7 @@ public partial class MainWindow : Window
         _settings.AppendTrailingSpace = TrailingSpaceCheck.IsChecked == true;
         _settings.ClipboardHandling   = (string?)((ComboBoxItem)ClipboardCombo.SelectedItem)?.Content  ?? "DontModify";
         _settings.AlwaysCopyTranscriptToClipboard = AlwaysCopyTranscriptCheck.IsChecked == true;
-        _settings.PasteFocusPolicy    = (string?)((ComboBoxItem)PasteFocusPolicyCombo.SelectedItem)?.Content ?? "RefuseAndCopy";
+        _settings.PasteFocusPolicy    = (string?)((ComboBoxItem)PasteFocusPolicyCombo.SelectedItem)?.Content ?? "RestoreAndPaste";
         _settings.BackgroundRecognitionEnabled = BackgroundRecognitionCheck.IsChecked == true;
         _settings.AutoSubmitKey       = (string?)((ComboBoxItem)AutoSubmitCombo.SelectedItem)?.Content ?? "None";
         DomainCorrectionsGrid.CommitEdit(DataGridEditingUnit.Cell, true);

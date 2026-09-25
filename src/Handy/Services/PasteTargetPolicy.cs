@@ -37,14 +37,14 @@ public static class PasteTargetPolicy
     public const int ErrorAccessDenied = 5;
 
     /// <summary>
-    /// Parses a string into a <see cref="PasteFocusPolicy"/>, defaulting to <see cref="PasteFocusPolicy.RefuseAndCopy"/>.
+    /// Parses a string into a <see cref="PasteFocusPolicy"/>, defaulting to <see cref="PasteFocusPolicy.RestoreAndPaste"/>.
     /// </summary>
     public static PasteFocusPolicy ParseFocusPolicy(string? value) =>
         value?.Trim().ToLowerInvariant() switch
         {
-            "restoreandpaste" or "restore" => PasteFocusPolicy.RestoreAndPaste,
+            "refuseandcopy" or "refuse"     => PasteFocusPolicy.RefuseAndCopy,
             "pasteanyway" or "anyway"       => PasteFocusPolicy.PasteAnyway,
-            _                               => PasteFocusPolicy.RefuseAndCopy,
+            _                               => PasteFocusPolicy.RestoreAndPaste,
         };
 
     /// <summary>
