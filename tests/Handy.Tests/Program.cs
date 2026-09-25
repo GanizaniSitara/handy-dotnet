@@ -355,13 +355,15 @@ static void AssertPasteTargetPolicy()
     AssertEqual(false, PasteTargetPolicy.IsWrongWindow(0x1234, 0), "paste target: unknown actual proceeds");
 
     // Policy parsing and fallback
-    AssertEqual(PasteFocusPolicy.RefuseAndCopy, PasteTargetPolicy.ParseFocusPolicy(null), "policy parse null");
-    AssertEqual(PasteFocusPolicy.RefuseAndCopy, PasteTargetPolicy.ParseFocusPolicy(""), "policy parse empty");
+    AssertEqual(PasteFocusPolicy.RestoreAndPaste, PasteTargetPolicy.ParseFocusPolicy(null), "policy parse null");
+    AssertEqual(PasteFocusPolicy.RestoreAndPaste, PasteTargetPolicy.ParseFocusPolicy(""), "policy parse empty");
     AssertEqual(PasteFocusPolicy.RefuseAndCopy, PasteTargetPolicy.ParseFocusPolicy("RefuseAndCopy"), "policy parse refuse");
+    AssertEqual(PasteFocusPolicy.RefuseAndCopy, PasteTargetPolicy.ParseFocusPolicy("refuse"), "policy parse refuse lower");
     AssertEqual(PasteFocusPolicy.RestoreAndPaste, PasteTargetPolicy.ParseFocusPolicy("RestoreAndPaste"), "policy parse restore");
     AssertEqual(PasteFocusPolicy.RestoreAndPaste, PasteTargetPolicy.ParseFocusPolicy("restore"), "policy parse restore lower");
     AssertEqual(PasteFocusPolicy.PasteAnyway, PasteTargetPolicy.ParseFocusPolicy("PasteAnyway"), "policy parse anyway");
-    AssertEqual(PasteFocusPolicy.RefuseAndCopy, PasteTargetPolicy.ParseFocusPolicy("unknown"), "policy parse unknown fallback");
+    AssertEqual(PasteFocusPolicy.RestoreAndPaste, PasteTargetPolicy.ParseFocusPolicy("unknown"), "policy parse unknown fallback");
+    AssertEqual("RestoreAndPaste", new AppSettings().PasteFocusPolicy, "policy default is RestoreAndPaste");
 
     // ShouldBlockOnFocusMismatch
     AssertEqual(false, PasteTargetPolicy.ShouldBlockOnFocusMismatch(PasteFocusPolicy.RefuseAndCopy, 0x1234, 0x1234), "should block: same window false");
@@ -452,7 +454,7 @@ static void AssertTextInjectionService()
         AssertEqual("Hello World", new string(mock.SentChars.ToArray()), "injection: chars match");
     }
 
-    // 2. Changed window under RefuseAndCopy (default)
+    // 2. Changed window under RefuseAndCopy
     {
         var mock = new MockWindowBridge { ForegroundWindow = new IntPtr(0x2000) };
         var injector = new TextInjectionService(mock);
