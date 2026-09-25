@@ -63,6 +63,10 @@ public sealed class AppSettings
     /// after paste/auto-submit handling, overriding ClipboardHandling restore semantics.</summary>
     public bool AlwaysCopyTranscriptToClipboard { get; set; } = false;
 
+    /// <summary>Action to take if the foreground window changes between dictation start and paste:
+    /// RefuseAndCopy (default) | RestoreAndPaste | PasteAnyway.</summary>
+    public string PasteFocusPolicy { get; set; } = "RefuseAndCopy";
+
     /// <summary>None | Enter | CtrlEnter.</summary>
     public string AutoSubmitKey { get; set; } = "None";
 
@@ -243,6 +247,8 @@ public sealed class AppSettings
         var migrated = false;
 
         s.DomainCorrections ??= new List<DomainCorrection>();
+        if (string.IsNullOrWhiteSpace(s.PasteFocusPolicy))
+            s.PasteFocusPolicy = "RefuseAndCopy";
 
         if (!hasTaskCaptureHotkey &&
             string.Equals(s.Hotkey, "Ctrl+Alt+Space", StringComparison.OrdinalIgnoreCase))
