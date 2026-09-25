@@ -128,8 +128,9 @@ AssertTranscriptSplicer();
 AssertTaskCaptureSettingsMigration();
 AssertTaskCaptureWriter();
 AssertPasteTargetPolicy();
+AssertTextInjectionService();
 
-Console.WriteLine($"Handy fixture passed ({tests.Length} correction cases plus settings, prompt-builder, speculative, splicer, task-capture, and paste-target checks).");
+Console.WriteLine($"Handy fixture passed ({tests.Length} correction cases plus settings, prompt-builder, speculative, splicer, task-capture, paste-target, and text-injection checks).");
 
 static DomainCorrection Rule(
     string from,
@@ -170,6 +171,7 @@ static void AssertDisabledRulePersists()
         settings.TaskCaptureHotkey = "Ctrl+Alt+T";
         settings.TaskCaptureInbox = Path.Combine(dir, "task-inbox");
         settings.AlwaysCopyTranscriptToClipboard = true;
+        settings.PasteFocusPolicy = "RestoreAndPaste";
         settings.WhisperVocabularyPromptEnabled = true;
         settings.WhisperCarryInitialPrompt = false;
         settings.DomainCorrections = new List<DomainCorrection>
@@ -190,6 +192,7 @@ static void AssertDisabledRulePersists()
         AssertEqual("Ctrl+Alt+T", reloaded.TaskCaptureHotkey, "settings round-trip: task capture hotkey");
         AssertEqual(Path.Combine(dir, "task-inbox"), reloaded.TaskCaptureInbox, "settings round-trip: task capture inbox");
         AssertEqual(true, reloaded.AlwaysCopyTranscriptToClipboard, "settings round-trip: always-copy clipboard");
+        AssertEqual("RestoreAndPaste", reloaded.PasteFocusPolicy, "settings round-trip: paste focus policy");
         AssertEqual(1, reloaded.DomainCorrections.Count, "settings round-trip: rule count");
         var rule = reloaded.DomainCorrections[0];
         AssertEqual(true, reloaded.WhisperVocabularyPromptEnabled, "settings round-trip: whisper vocabulary prompt");
@@ -351,6 +354,21 @@ static void AssertPasteTargetPolicy()
     AssertEqual(false, PasteTargetPolicy.IsWrongWindow(0, 0x5678), "paste target: unknown intended proceeds");
     AssertEqual(false, PasteTargetPolicy.IsWrongWindow(0x1234, 0), "paste target: unknown actual proceeds");
 
+    // Policy parsing and fallback
+    AssertEqual(PasteFocusPolicy.RefuseAndCopy, PasteTargetPolicy.ParseFocusPolicy(null), "policy parse null");
+    AssertEqual(PasteFocusPolicy.RefuseAndCopy, PasteTargetPolicy.ParseFocusPolicy(""), "policy parse empty");
+    AssertEqual(PasteFocusPolicy.RefuseAndCopy, PasteTargetPolicy.ParseFocusPolicy("RefuseAndCopy"), "policy parse refuse");
+    AssertEqual(PasteFocusPolicy.RestoreAndPaste, PasteTargetPolicy.ParseFocusPolicy("RestoreAndPaste"), "policy parse restore");
+    AssertEqual(PasteFocusPolicy.RestoreAndPaste, PasteTargetPolicy.ParseFocusPolicy("restore"), "policy parse restore lower");
+    AssertEqual(PasteFocusPolicy.PasteAnyway, PasteTargetPolicy.ParseFocusPolicy("PasteAnyway"), "policy parse anyway");
+    AssertEqual(PasteFocusPolicy.RefuseAndCopy, PasteTargetPolicy.ParseFocusPolicy("unknown"), "policy parse unknown fallback");
+
+    // ShouldBlockOnFocusMismatch
+    AssertEqual(false, PasteTargetPolicy.ShouldBlockOnFocusMismatch(PasteFocusPolicy.RefuseAndCopy, 0x1234, 0x1234), "should block: same window false");
+    AssertEqual(true,  PasteTargetPolicy.ShouldBlockOnFocusMismatch(PasteFocusPolicy.RefuseAndCopy, 0x1234, 0x5678), "should block: changed window refuse");
+    AssertEqual(false, PasteTargetPolicy.ShouldBlockOnFocusMismatch(PasteFocusPolicy.PasteAnyway, 0x1234, 0x5678), "should block: changed window anyway");
+    AssertEqual(false, PasteTargetPolicy.ShouldBlockOnFocusMismatch(PasteFocusPolicy.RefuseAndCopy, 0, 0x5678), "should block: unknown intended false");
+
     // Delivery classification.
     AssertEqual(PasteOutcome.Delivered, PasteTargetPolicy.Classify(sent: 800, expected: 800, lastErr: 0),
         "paste classify: full injection delivered");
@@ -418,6 +436,267 @@ static void AssertTranscriptSplicer()
     AssertEqual("the cat sat on the mat",
         TranscriptSplicer.Combine("the cat sat", "on the mat"),
         "splicer: no false merge without overlap");
+}
+
+static void AssertTextInjectionService()
+{
+    var settings = new AppSettings { PasteMethod = "Direct", DirectCharDelayMs = 0 };
+
+    // 1. Same window proceeds and delivers all characters
+    {
+        var mock = new MockWindowBridge { ForegroundWindow = new IntPtr(0x1000) };
+        var injector = new TextInjectionService(mock);
+        var res = injector.Paste("Hello World", settings, new IntPtr(0x1000));
+        AssertEqual(PasteOutcome.Delivered, res.Outcome, "injection: same window delivered");
+        AssertEqual(11, res.DeliveredChars, "injection: chars delivered count");
+        AssertEqual("Hello World", new string(mock.SentChars.ToArray()), "injection: chars match");
+    }
+
+    // 2. Changed window under RefuseAndCopy (default)
+    {
+        var mock = new MockWindowBridge { ForegroundWindow = new IntPtr(0x2000) };
+        var injector = new TextInjectionService(mock);
+        settings.PasteFocusPolicy = "RefuseAndCopy";
+        var res = injector.Paste("Hello World", settings, new IntPtr(0x1000));
+        AssertEqual(PasteOutcome.WrongWindow, res.Outcome, "injection: refuse on changed window");
+        AssertEqual(0, res.DeliveredChars, "injection: 0 chars delivered");
+        AssertEqual(0, mock.SentChars.Count, "injection: no chars sent");
+        AssertEqual(true, res.Detail?.Contains("0x2000"), "injection: detail names thief window");
+    }
+
+    // 3. Changed window under PasteAnyway
+    {
+        var mock = new MockWindowBridge { ForegroundWindow = new IntPtr(0x2000) };
+        var injector = new TextInjectionService(mock);
+        settings.PasteFocusPolicy = "PasteAnyway";
+        var res = injector.Paste("Hello World", settings, new IntPtr(0x1000));
+        AssertEqual(PasteOutcome.Delivered, res.Outcome, "injection: paste anyway delivers");
+        AssertEqual(11, res.DeliveredChars, "injection: paste anyway chars count");
+        AssertEqual("Hello World", new string(mock.SentChars.ToArray()), "injection: paste anyway chars match");
+    }
+
+    // 4. Changed window under RestoreAndPaste - restore succeeds
+    {
+        var mock = new MockWindowBridge
+        {
+            ForegroundWindow = new IntPtr(0x2000),
+            AllowRestore = true,
+        };
+        var injector = new TextInjectionService(mock);
+        settings.PasteFocusPolicy = "RestoreAndPaste";
+        var res = injector.Paste("Hello World", settings, new IntPtr(0x1000));
+        AssertEqual(PasteOutcome.Delivered, res.Outcome, "injection: restore succeeds delivers");
+        AssertEqual(new IntPtr(0x1000), mock.RestoredWindow, "injection: restore targeted intended window");
+        AssertEqual(11, res.DeliveredChars, "injection: restore chars count");
+    }
+
+    // 5. Changed window under RestoreAndPaste - restore fails
+    {
+        var mock = new MockWindowBridge
+        {
+            ForegroundWindow = new IntPtr(0x2000),
+            AllowRestore = false,
+        };
+        var injector = new TextInjectionService(mock);
+        settings.PasteFocusPolicy = "RestoreAndPaste";
+        var res = injector.Paste("Hello World", settings, new IntPtr(0x1000));
+        AssertEqual(PasteOutcome.WrongWindow, res.Outcome, "injection: restore fails returns WrongWindow");
+        AssertEqual(0, res.DeliveredChars, "injection: 0 chars delivered");
+        AssertEqual(0, mock.SentChars.Count, "injection: 0 chars sent");
+    }
+
+    // 6. Mid-injection focus steal under RefuseAndCopy
+    {
+        var mock = new MockWindowBridge { ForegroundWindow = new IntPtr(0x1000) };
+        mock.OnUnicodeChar = (count) =>
+        {
+            if (count == 8) mock.ForegroundWindow = new IntPtr(0x9999);
+        };
+        var injector = new TextInjectionService(mock);
+        settings.PasteFocusPolicy = "RefuseAndCopy";
+        var text = "12345678901234567890123456789012"; // 32 chars
+        var res = injector.Paste(text, settings, new IntPtr(0x1000));
+        AssertEqual(PasteOutcome.Interrupted, res.Outcome, "injection: mid-steal interrupted");
+        AssertEqual(16, res.DeliveredChars, "injection: mid-steal chars delivered");
+        AssertEqual(16, mock.SentChars.Count, "injection: mid-steal chars count");
+    }
+
+    // 7. Mid-injection focus steal under PasteAnyway
+    {
+        var mock = new MockWindowBridge { ForegroundWindow = new IntPtr(0x1000) };
+        mock.OnUnicodeChar = (count) =>
+        {
+            if (count == 8) mock.ForegroundWindow = new IntPtr(0x9999);
+        };
+        var injector = new TextInjectionService(mock);
+        settings.PasteFocusPolicy = "PasteAnyway";
+        var text = "12345678901234567890123456789012";
+        var res = injector.Paste(text, settings, new IntPtr(0x1000));
+        AssertEqual(PasteOutcome.Delivered, res.Outcome, "injection: mid-steal paste anyway delivers");
+        AssertEqual(32, res.DeliveredChars, "injection: mid-steal all chars delivered");
+    }
+
+    // 8. Mid-injection focus steal under RestoreAndPaste (restore succeeds)
+    {
+        var mock = new MockWindowBridge { ForegroundWindow = new IntPtr(0x1000), AllowRestore = true };
+        mock.OnUnicodeChar = (count) =>
+        {
+            if (count == 8) mock.ForegroundWindow = new IntPtr(0x9999);
+        };
+        var injector = new TextInjectionService(mock);
+        settings.PasteFocusPolicy = "RestoreAndPaste";
+        var text = "12345678901234567890123456789012";
+        var res = injector.Paste(text, settings, new IntPtr(0x1000));
+        AssertEqual(PasteOutcome.Delivered, res.Outcome, "injection: mid-steal restored delivers");
+        AssertEqual(32, res.DeliveredChars, "injection: mid-steal restored all chars");
+    }
+
+    // 9. Mid-injection focus steal under RestoreAndPaste (restore fails)
+    {
+        var mock = new MockWindowBridge { ForegroundWindow = new IntPtr(0x1000), AllowRestore = false };
+        mock.OnUnicodeChar = (count) =>
+        {
+            if (count == 8) mock.ForegroundWindow = new IntPtr(0x9999);
+        };
+        var injector = new TextInjectionService(mock);
+        settings.PasteFocusPolicy = "RestoreAndPaste";
+        var text = "12345678901234567890123456789012";
+        var res = injector.Paste(text, settings, new IntPtr(0x1000));
+        AssertEqual(PasteOutcome.Interrupted, res.Outcome, "injection: mid-steal restore failed interrupted");
+        AssertEqual(16, res.DeliveredChars, "injection: mid-steal restore failed 16 chars");
+    }
+
+    // 10. Chord paste (CtrlV) wrong window refused
+    {
+        var mock = new MockWindowBridge { ForegroundWindow = new IntPtr(0x2000) };
+        var injector = new TextInjectionService(mock);
+        var chordSettings = new AppSettings { PasteMethod = "CtrlV", PasteFocusPolicy = "RefuseAndCopy" };
+        var res = injector.Paste("Hello Chord", chordSettings, new IntPtr(0x1000));
+        AssertEqual(PasteOutcome.WrongWindow, res.Outcome, "chord: wrong window refused");
+        AssertEqual(0u, mock.SentKeyCount, "chord: no keys sent");
+    }
+
+    // 11. Chord paste (CtrlV) delivers when window matches
+    {
+        var mock = new MockWindowBridge { ForegroundWindow = new IntPtr(0x1000) };
+        var injector = new TextInjectionService(mock);
+        var chordSettings = new AppSettings { PasteMethod = "CtrlV", PasteFocusPolicy = "RefuseAndCopy" };
+        var res = injector.Paste("Hello Chord", chordSettings, new IntPtr(0x1000));
+        AssertEqual(PasteOutcome.Delivered, res.Outcome, "chord: delivered");
+        AssertEqual(4u, mock.SentKeyCount, "chord: 4 keys sent (Ctrl down, V down, V up, Ctrl up)");
+    }
+
+    // 12. Elevation mismatch UIPI error description
+    {
+        var mock = new MockWindowBridge
+        {
+            ForegroundWindow = new IntPtr(0x1000),
+            Elevated = true,
+            ElevatedProcessName = "TaskMgr",
+            LastWin32Error = 5,
+            BlockSendInput = true,
+        };
+        var injector = new TextInjectionService(mock);
+        var chordSettings = new AppSettings { PasteMethod = "CtrlV", PasteFocusPolicy = "RefuseAndCopy" };
+        var res = injector.Paste("Hello Admin", chordSettings, new IntPtr(0x1000));
+        AssertEqual(PasteOutcome.Refused, res.Outcome, "chord: UIPI refused");
+        AssertEqual(true, res.Detail?.Contains("TaskMgr is running as administrator"), "chord: UIPI detail names admin process");
+    }
+
+    // 13. Empty text handling
+    {
+        var mock = new MockWindowBridge { ForegroundWindow = new IntPtr(0x1000) };
+        var injector = new TextInjectionService(mock);
+        var res = injector.Paste("", settings, new IntPtr(0x1000));
+        AssertEqual(PasteOutcome.Delivered, res.Outcome, "injection: empty string delivered");
+    }
+
+    // 14. None paste method executes auto-submit only
+    {
+        var mock = new MockWindowBridge { ForegroundWindow = new IntPtr(0x1000) };
+        var injector = new TextInjectionService(mock);
+        var noneSettings = new AppSettings { PasteMethod = "None", AutoSubmitKey = "Enter" };
+        var res = injector.Paste("No Paste", noneSettings, new IntPtr(0x1000));
+        AssertEqual(PasteOutcome.Delivered, res.Outcome, "none method: delivered");
+        AssertEqual(2u, mock.SentKeyCount, "none method: auto-submit sent 2 keys");
+        AssertEqual(0, mock.SentChars.Count, "none method: no chars typed");
+    }
+}
+
+sealed class MockWindowBridge : IWindowBridge
+{
+    public IntPtr ForegroundWindow { get; set; } = new(0x1000);
+    public IntPtr RestoredWindow { get; set; } = IntPtr.Zero;
+    public bool AllowRestore { get; set; } = false;
+    public bool Citrix { get; set; } = false;
+    public bool Elevated { get; set; } = false;
+    public string ElevatedProcessName { get; set; } = "AdminApp";
+    public int LastWin32Error { get; set; } = 0;
+    public uint SentUnicodeCount { get; set; } = 0;
+    public uint SentKeyCount { get; set; } = 0;
+    public bool BlockSendInput { get; set; } = false;
+    public List<char> SentChars { get; } = new();
+    public List<(ushort vk, bool down)> SentKeys { get; } = new();
+    public string? ClipboardContent { get; set; }
+    public bool FailSetClipboard { get; set; } = false;
+
+    public Action<int>? OnUnicodeChar;
+
+    public IntPtr GetForegroundWindow() => ForegroundWindow;
+
+    public bool SetForegroundWindow(IntPtr hWnd)
+    {
+        RestoredWindow = hWnd;
+        if (AllowRestore)
+        {
+            ForegroundWindow = hWnd;
+            return true;
+        }
+        return false;
+    }
+
+    public string DescribeWindow(IntPtr hwnd) => $"[MockApp|Window|0x{hwnd.ToInt64():X}]";
+
+    public string DescribeForegroundWindow() => DescribeWindow(ForegroundWindow);
+
+    public bool IsCitrixForeground() => Citrix;
+
+    public bool IsElevationMismatch(IntPtr hwnd, out string targetName, out int lastErr)
+    {
+        lastErr = LastWin32Error;
+        targetName = ElevatedProcessName;
+        return Elevated;
+    }
+
+    public uint SendUnicode(char ch)
+    {
+        if (BlockSendInput) return 0;
+        OnUnicodeChar?.Invoke(SentChars.Count);
+        SentChars.Add(ch);
+        SentUnicodeCount += 2;
+        return 2;
+    }
+
+    public uint SendKey(ushort vk, bool down)
+    {
+        if (BlockSendInput) return 0;
+        SentKeys.Add((vk, down));
+        SentKeyCount += 1;
+        return 1;
+    }
+
+    public bool TrySetClipboard(string text)
+    {
+        if (FailSetClipboard) return false;
+        ClipboardContent = text;
+        return true;
+    }
+
+    public string? TryReadClipboard() => ClipboardContent;
+
+    public void Sleep(int ms) { }
+
+    public int GetLastWin32Error() => LastWin32Error;
 }
 
 internal sealed record TestCase(

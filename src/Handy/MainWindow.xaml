@@ -324,6 +324,21 @@
                                         <ColumnDefinition Width="*"/>
                                         <ColumnDefinition Width="160"/>
                                     </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="If target window changes" Style="{StaticResource Text.SettingLabel}"
+                                               ToolTip="Action if focus moves before paste. RefuseAndCopy leaves transcript on clipboard. RestoreAndPaste attempts to reactivate original window. PasteAnyway types into current window."/>
+                                    <ComboBox  Grid.Column="1" x:Name="PasteFocusPolicyCombo">
+                                        <ComboBoxItem Content="RefuseAndCopy"/>
+                                        <ComboBoxItem Content="RestoreAndPaste"/>
+                                        <ComboBoxItem Content="PasteAnyway"/>
+                                    </ComboBox>
+                                </Grid>
+                            </Border>
+                            <Border Style="{StaticResource SettingsRow}">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="160"/>
+                                    </Grid.ColumnDefinitions>
                                     <TextBlock Grid.Column="0" Text="Auto-submit" Style="{StaticResource Text.SettingLabel}"
                                                ToolTip="Send a key after paste — e.g. Enter to send the chat message."/>
                                     <ComboBox  Grid.Column="1" x:Name="AutoSubmitCombo">

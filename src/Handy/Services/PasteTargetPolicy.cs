@@ -15,6 +15,17 @@ public enum PasteOutcome
     Partial,
 }
 
+/// <summary>Action to take when the foreground window has changed since dictation started.</summary>
+public enum PasteFocusPolicy
+{
+    /// <summary>Refuse to type into the changed window; copy transcript to clipboard and notify.</summary>
+    RefuseAndCopy,
+    /// <summary>Attempt to restore focus to the intended window; fall back to clipboard if unsuccessful.</summary>
+    RestoreAndPaste,
+    /// <summary>Type into whatever window currently has focus anyway.</summary>
+    PasteAnyway,
+}
+
 /// <summary>
 /// Pure decision logic for "should we type this, and did it land?". Kept free of
 /// window handles and Win32 calls so it can be unit-tested directly, the same
@@ -24,6 +35,17 @@ public static class PasteTargetPolicy
 {
     /// <summary>ERROR_ACCESS_DENIED — what SendInput reports when UIPI blocks it.</summary>
     public const int ErrorAccessDenied = 5;
+
+    /// <summary>
+    /// Parses a string into a <see cref="PasteFocusPolicy"/>, defaulting to <see cref="PasteFocusPolicy.RefuseAndCopy"/>.
+    /// </summary>
+    public static PasteFocusPolicy ParseFocusPolicy(string? value) =>
+        value?.Trim().ToLowerInvariant() switch
+        {
+            "restoreandpaste" or "restore" => PasteFocusPolicy.RestoreAndPaste,
+            "pasteanyway" or "anyway"       => PasteFocusPolicy.PasteAnyway,
+            _                               => PasteFocusPolicy.RefuseAndCopy,
+        };
 
     /// <summary>
     /// True when the window we are about to type into is not the one the user
@@ -36,6 +58,16 @@ public static class PasteTargetPolicy
     {
         if (intendedHwnd == 0 || actualHwnd == 0) return false;
         return intendedHwnd != actualHwnd;
+    }
+
+    /// <summary>
+    /// Evaluates whether the injection should be blocked given the active policy
+    /// and the intended vs actual window handles.
+    /// </summary>
+    public static bool ShouldBlockOnFocusMismatch(PasteFocusPolicy policy, long intendedHwnd, long actualHwnd)
+    {
+        if (policy == PasteFocusPolicy.PasteAnyway) return false;
+        return IsWrongWindow(intendedHwnd, actualHwnd);
     }
 
     /// <summary>
