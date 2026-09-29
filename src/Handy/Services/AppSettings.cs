@@ -20,6 +20,13 @@ public sealed class AppSettings
     public string Hotkey { get; set; } = "Ctrl+Space";
     public string CancelHotkey { get; set; } = "Escape";
 
+    /// <summary>Second cancel chord. A Citrix viewer keeps plain keys such as Escape for the
+    /// remote desktop but lets modifier chords reach our hook, so this one works over Citrix.</summary>
+    public string CancelChordHotkey { get; set; } = "Ctrl+Shift+X";
+
+    /// <summary>Turns <see cref="CancelChordHotkey"/> on or off. On by default.</summary>
+    public bool CancelChordEnabled { get; set; } = true;
+
     /// <summary>Capture a dictated task into the durable inbox folder
     /// without pasting into the foreground application.</summary>
     public string TaskCaptureHotkey { get; set; } = "Ctrl+Shift+Space";
@@ -32,6 +39,11 @@ public sealed class AppSettings
     /// without triggering paste. Useful when the auto-paste failed silently (e.g. terminal
     /// integrity-level mismatch) and the user wants to paste it manually somewhere else.</summary>
     public string CopyLastHotkey { get; set; } = "Ctrl+Shift+C";
+
+    /// <summary>Recovery hotkey: types the most recent transcription into the focused window
+    /// character by character (Direct injection), for targets where Ctrl+V can't reach the
+    /// local clipboard — notably a Citrix desktop with clipboard redirection disabled.</summary>
+    public string RetypeLastHotkey { get; set; } = "Ctrl+Shift+V";
 
     /// <summary>Push-to-talk (hold) vs. toggle.</summary>
     public bool PushToTalk { get; set; } = false;

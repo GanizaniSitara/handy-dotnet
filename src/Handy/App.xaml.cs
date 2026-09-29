@@ -8,6 +8,7 @@ using System.Windows;
 using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Threading;
+using Handy.PInvoke;
 using Handy.Services;
 
 namespace Handy;
@@ -241,11 +242,14 @@ public partial class App : Application
             Hotkey.Parse(_settings.Hotkey),
             Hotkey.Parse(_settings.TaskCaptureHotkey),
             Hotkey.Parse(_settings.CancelHotkey),
-            Hotkey.Parse(_settings.CopyLastHotkey));
+            Hotkey.Parse(_settings.CopyLastHotkey),
+            Hotkey.Parse(_settings.RetypeLastHotkey),
+            _settings.CancelChordEnabled ? Hotkey.Parse(_settings.CancelChordHotkey) : default);
         _hook.OnTrigger     += OnTrigger;
         _hook.OnTaskCapture += OnTaskCapture;
         _hook.OnCancel      += OnCancel;
         _hook.OnCopyLast    += CopyLastTranscript;
+        _hook.OnRetypeLast  += RetypeLastTranscript;
         _hook.Install();
 
         // Listen for CLI-forwarded signals from the single-instance gate.
@@ -346,7 +350,9 @@ public partial class App : Application
             Hotkey.Parse(_settings.Hotkey),
             Hotkey.Parse(_settings.TaskCaptureHotkey),
             Hotkey.Parse(_settings.CancelHotkey),
-            Hotkey.Parse(_settings.CopyLastHotkey));
+            Hotkey.Parse(_settings.CopyLastHotkey),
+            Hotkey.Parse(_settings.RetypeLastHotkey),
+            _settings.CancelChordEnabled ? Hotkey.Parse(_settings.CancelChordHotkey) : default);
         AutostartService.Apply(_settings.Autostart);
         _feedback?.UpdateSettings(_settings);
         _audio?.SetPreferredDevice(_settings.MicrophoneDeviceName);
@@ -912,6 +918,7 @@ public partial class App : Application
                 {
                     _session?.SetPhase(SessionPhase.Paste);
                     var pasteFailed = false;
+                    var lastPasteCitrix = false;
                     try
                     {
                         // The window the user was looking at when they started
@@ -919,6 +926,7 @@ public partial class App : Application
                         // refuses anything else rather than typing blind.
                         var result = _injector!.Paste(text, _settings, new IntPtr(captureForeground.Hwnd));
                         pasteOk = result.Delivered;
+                        lastPasteCitrix = result.Citrix;
                         if (!result.Delivered)
                         {
                             pasteFailed = true;
@@ -940,7 +948,14 @@ public partial class App : Application
                     // Already on the clipboard as the recovery copy; don't
                     // overwrite it (and don't pay for a second clipboard round
                     // trip) just to honour the always-copy setting.
-                    if (!pasteFailed) CopyTranscriptToClipboardIfEnabled(text);
+                    if (!pasteFailed)
+                    {
+                        // Inside a Citrix viewer every remote window is the same
+                        // local HWND, so a remote focus switch mid-dictation looks
+                        // like a clean delivery. Always leave a recovery copy.
+                        if (lastPasteCitrix) CopyTextToClipboard(text, "citrix-backup");
+                        else CopyTranscriptToClipboardIfEnabled(text);
+                    }
                     copySw.Stop();
                     copyMs = copySw.ElapsedMilliseconds;
                 }
@@ -1139,6 +1154,55 @@ public partial class App : Application
             Log.Warn($"copy-last-transcription: clipboard set failed: {ex.Message}");
             _tray?.Notify("Handy.NET", "Copy failed — see log.");
         }
+    }
+
+    /// <summary>
+    /// Types the last transcript into whatever has focus now, character by
+    /// character. The Ctrl+V recovery route fails into a Citrix desktop whose
+    /// clipboard redirection is off; keystrokes still get through.
+    /// </summary>
+    private void RetypeLastTranscript()
+    {
+        var entry = _history?.LastEntry();
+        var injector = _injector;
+        if (entry is null || string.IsNullOrEmpty(entry.Text) || injector is null)
+        {
+            Log.Warn("retype-last-transcription: history empty or unreadable");
+            _feedback?.PlayCancel();
+            return;
+        }
+        if (_transcribing)
+        {
+            Log.Warn("retype-last-transcription: ignored while a transcription is in flight");
+            return;
+        }
+
+        var text = entry.Text;
+        var settings = new AppSettings
+        {
+            PasteMethod             = "Direct",
+            DirectCharDelayMs       = _settings.DirectCharDelayMs,
+            DirectCharDelayMsCitrix = _settings.DirectCharDelayMsCitrix,
+            PasteFocusPolicy        = "PasteAnyway",
+            AutoSubmitKey           = "None",
+        };
+        Task.Run(() =>
+        {
+            // The hotkey's modifiers are still physically down when it fires;
+            // typing now would turn "a" into Ctrl+Shift+A. Wait for release.
+            var sw = Stopwatch.StartNew();
+            while (sw.ElapsedMilliseconds < 3000 && AnyModifierDown()) Thread.Sleep(20);
+            Thread.Sleep(50);
+            var result = injector.Paste(text, settings, IntPtr.Zero);
+            Log.Info($"retype-last-transcription: {text.Length} chars, outcome={result.Outcome}, citrix={result.Citrix}");
+        });
+    }
+
+    private static bool AnyModifierDown()
+    {
+        foreach (var vk in new[] { 0x10, 0x11, 0x12, 0x5B, 0x5C })
+            if ((NativeMethods.GetAsyncKeyState(vk) & 0x8000) != 0) return true;
+        return false;
     }
 
     private void CopyTranscriptToClipboardIfEnabled(string text)

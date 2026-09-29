@@ -125,11 +125,40 @@
                                 <Grid>
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="240"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="Cancel chord (works over Citrix)" Style="{StaticResource Text.SettingLabel}"
+                                               ToolTip="Second cancel shortcut. A Citrix window keeps plain Escape for the remote desktop, but lets Ctrl chords through to Handy. Untick to turn it off."/>
+                                    <CheckBox  Grid.Column="1" x:Name="CancelChordCheck" VerticalAlignment="Center" Margin="0,0,8,0"
+                                               ToolTip="Tick to enable the cancel chord (on by default)."/>
+                                    <TextBox   Grid.Column="2" x:Name="CancelChordBox" KeyDown="OnCancelChordBoxKeyDown"
+                                               IsReadOnly="True" Focusable="True"
+                                               ToolTip="Click, then press the desired combination."/>
+                                </Grid>
+                            </Border>
+                            <Border Style="{StaticResource SettingsRow}">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
                                         <ColumnDefinition Width="240"/>
                                     </Grid.ColumnDefinitions>
                                     <TextBlock Grid.Column="0" Text="Copy last transcription" Style="{StaticResource Text.SettingLabel}"
                                                ToolTip="Recovery hotkey: copies the most recent transcript back onto the clipboard so you can paste it manually."/>
                                     <TextBox   Grid.Column="1" x:Name="CopyLastBox" KeyDown="OnCopyLastBoxKeyDown"
+                                               IsReadOnly="True" Focusable="True"
+                                               ToolTip="Click, then press the desired combination."/>
+                                </Grid>
+                            </Border>
+                            <Border Style="{StaticResource SettingsRow}">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="240"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="Retype last transcription" Style="{StaticResource Text.SettingLabel}"
+                                               ToolTip="Recovery hotkey: types the most recent transcript into the focused window key by key. Works into Citrix when Ctrl+V cannot reach the local clipboard."/>
+                                    <TextBox   Grid.Column="1" x:Name="RetypeLastBox" KeyDown="OnRetypeLastBoxKeyDown"
                                                IsReadOnly="True" Focusable="True"
                                                ToolTip="Click, then press the desired combination."/>
                                 </Grid>

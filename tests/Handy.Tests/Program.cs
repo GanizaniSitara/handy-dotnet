@@ -623,6 +623,15 @@ static void AssertTextInjectionService()
         AssertEqual(2u, mock.SentKeyCount, "none method: auto-submit sent 2 keys");
         AssertEqual(0, mock.SentChars.Count, "none method: no chars typed");
     }
+
+    // 15. Direct into Citrix reports it, so the caller can leave a recovery copy
+    {
+        var mock = new MockWindowBridge { ForegroundWindow = new IntPtr(0x1000), Citrix = true };
+        var injector = new TextInjectionService(mock);
+        var res = injector.Paste("Remote", new AppSettings { PasteMethod = "Direct" }, new IntPtr(0x1000));
+        AssertEqual(PasteOutcome.Delivered, res.Outcome, "citrix: delivered");
+        AssertEqual(true, res.Citrix, "citrix: flagged on result");
+    }
 }
 
 sealed class MockWindowBridge : IWindowBridge

@@ -154,7 +154,10 @@ public partial class MainWindow : Window
             TaskCaptureHotkeyBox.Text = _settings.TaskCaptureHotkey;
             TaskCaptureInboxBox.Text = _settings.TaskCaptureInbox;
             CancelBox.Text   = _settings.CancelHotkey;
+            CancelChordBox.Text = _settings.CancelChordHotkey;
+            CancelChordCheck.IsChecked = _settings.CancelChordEnabled;
             CopyLastBox.Text = _settings.CopyLastHotkey;
+            RetypeLastBox.Text = _settings.RetypeLastHotkey;
             PttCheck.IsChecked = _settings.PushToTalk;
 
             SelectComboByContent(PasteMethodCombo, _settings.PasteMethod);
@@ -263,7 +266,10 @@ public partial class MainWindow : Window
             ? _settings.TaskCaptureInbox
             : TaskCaptureInboxBox.Text.Trim();
         _settings.CancelHotkey   = string.IsNullOrWhiteSpace(CancelBox.Text)   ? _settings.CancelHotkey   : CancelBox.Text;
+        _settings.CancelChordHotkey = string.IsNullOrWhiteSpace(CancelChordBox.Text) ? _settings.CancelChordHotkey : CancelChordBox.Text;
+        _settings.CancelChordEnabled = CancelChordCheck.IsChecked == true;
         _settings.CopyLastHotkey = string.IsNullOrWhiteSpace(CopyLastBox.Text) ? _settings.CopyLastHotkey : CopyLastBox.Text;
+        _settings.RetypeLastHotkey = string.IsNullOrWhiteSpace(RetypeLastBox.Text) ? _settings.RetypeLastHotkey : RetypeLastBox.Text;
         _settings.PushToTalk     = PttCheck.IsChecked == true;
 
         _settings.PasteMethod         = (string?)((ComboBoxItem)PasteMethodCombo.SelectedItem)?.Content ?? "CtrlV";
@@ -383,7 +389,9 @@ public partial class MainWindow : Window
     private void OnTaskCaptureHotkeyBoxKeyDown(object sender, KeyEventArgs e)
         => CaptureChord(TaskCaptureHotkeyBox, e);
     private void OnCancelBoxKeyDown(object sender, KeyEventArgs e)   => CaptureChord(CancelBox, e, singleKey: true);
+    private void OnCancelChordBoxKeyDown(object sender, KeyEventArgs e) => CaptureChord(CancelChordBox, e);
     private void OnCopyLastBoxKeyDown(object sender, KeyEventArgs e) => CaptureChord(CopyLastBox, e);
+    private void OnRetypeLastBoxKeyDown(object sender, KeyEventArgs e) => CaptureChord(RetypeLastBox, e);
 
     private static void CaptureChord(TextBox box, KeyEventArgs e, bool singleKey = false)
     {
