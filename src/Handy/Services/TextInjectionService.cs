@@ -14,9 +14,11 @@ namespace Handy.Services;
 /// <summary>
 /// What happened to one paste attempt. <see cref="DeliveredChars"/> is only
 /// meaningful for the Direct method, where injection is per-character and can
-/// therefore be cut off part-way.
+/// therefore be cut off part-way. <see cref="Citrix"/> is true when the text
+/// was typed into a Citrix viewer, where a remote window switch is invisible to
+/// us and "delivered" cannot be trusted to mean "landed where intended".
 /// </summary>
-public sealed record PasteResult(PasteOutcome Outcome, string? Detail = null, int DeliveredChars = 0)
+public sealed record PasteResult(PasteOutcome Outcome, string? Detail = null, int DeliveredChars = 0, bool Citrix = false)
 {
     public bool Delivered => Outcome.IsDelivered();
 }
@@ -102,10 +104,10 @@ public sealed class TextInjectionService
                      $"chars={charsDone}/{text.Length}, lastErr={directErr}, citrix={citrix}, charDelayMs={delay}");
 
             if (!outcome.IsDelivered())
-                return new PasteResult(outcome, DescribeFailure(outcome, actualHwnd, directErr), charsDone);
+                return new PasteResult(outcome, DescribeFailure(outcome, actualHwnd, directErr), charsDone, citrix);
 
             SendAutoSubmit(settings.AutoSubmitKey);
-            return new PasteResult(PasteOutcome.Delivered, null, charsDone);
+            return new PasteResult(PasteOutcome.Delivered, null, charsDone, citrix);
         }
 
         // Clipboard-based paste: snapshot the original clipboard (if user wants it preserved),

@@ -42,6 +42,25 @@ public partial class RecordingOverlay : Window
             var ex = GetWindowLong32(hwnd, GWL_EXSTYLE);
             SetWindowLong32(hwnd, GWL_EXSTYLE, ex | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE);
         };
+
+        // A full-screen Citrix viewer is itself topmost, so clicking into it
+        // after the pill appeared buries the pill. Re-assert while visible.
+        _topmostTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(300) };
+        _topmostTimer.Tick += (_, _) => ReassertTopmost();
+        IsVisibleChanged += (_, _) =>
+        {
+            if (IsVisible) _topmostTimer.Start();
+            else _topmostTimer.Stop();
+        };
+    }
+
+    private readonly DispatcherTimer _topmostTimer;
+
+    private void ReassertTopmost()
+    {
+        var hwnd = new WindowInteropHelper(this).Handle;
+        if (hwnd != IntPtr.Zero)
+            SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     }
 
     private static readonly Brush IdleBackground    = new SolidColorBrush(Color.FromArgb(0xCC, 0x11, 0x11, 0x11));

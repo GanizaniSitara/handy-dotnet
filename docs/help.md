@@ -12,13 +12,20 @@ you said and types it into the window you were in.
 Press **Escape** at any point to throw the dictation away — while you are still
 talking, or while it is still transcribing.
 
+Working in Citrix? A Citrix window keeps plain Escape for the remote desktop, so
+it never reaches Handy. Use **Ctrl+Shift+X** instead — it cancels the same way
+and works over Citrix. It is on by default; untick **Cancel chord** on the
+**General** tab to turn it off, or click the box next to it to pick another chord.
+
 The shortcuts are all configurable on the **General** tab.
 
 | Shortcut | Does |
 |---|---|
 | Ctrl+Space | Start and stop dictating |
 | Escape | Cancel and discard |
+| Ctrl+Shift+X | Cancel and discard — also works over Citrix (can be turned off) |
 | Ctrl+Shift+C | Copy the last transcript to the clipboard again |
+| Ctrl+Shift+V | Type the last transcript again, key by key — works into Citrix |
 | Ctrl+Shift+Space | Send the dictation to your task inbox instead of typing it |
 
 ## Where The Text Goes
