@@ -20,6 +20,7 @@ public sealed class LowLevelKeyHookService : IDisposable
     public event Action<bool>? OnTaskCapture;
     public event Action?       OnCancel;
     public event Action?       OnCopyLast;
+    public event Action?       OnRetypeLast;
 
     private const int WH_KEYBOARD_LL = 13;
     private const int WM_KEYDOWN    = 0x0100;
@@ -46,7 +47,9 @@ public sealed class LowLevelKeyHookService : IDisposable
     private Hotkey _trigger;
     private Hotkey _taskCapture;
     private Hotkey _cancel;
+    private Hotkey _cancelChord;
     private Hotkey _copyLast;
+    private Hotkey _retypeLast;
     private bool   _triggerActive;
     private bool   _taskCaptureActive;
 
@@ -71,16 +74,19 @@ public sealed class LowLevelKeyHookService : IDisposable
         _proc = HookCallback;
     }
 
-    public void Configure(Hotkey trigger, Hotkey taskCapture, Hotkey cancel, Hotkey copyLast)
+    public void Configure(Hotkey trigger, Hotkey taskCapture, Hotkey cancel, Hotkey copyLast, Hotkey retypeLast,
+                          Hotkey cancelChord)
     {
         _trigger     = trigger;
         _taskCapture = taskCapture;
         _cancel      = cancel;
+        _cancelChord = cancelChord;
         _copyLast    = copyLast;
+        _retypeLast  = retypeLast;
         _triggerActive = false;
         _taskCaptureActive = false;
         ResetTrackedModifiers();
-        Log.Info($"Hotkey: trigger='{trigger.Display}' taskCapture='{taskCapture.Display}' cancel='{cancel.Display}' copyLast='{copyLast.Display}'");
+        Log.Info($"Hotkey: trigger='{trigger.Display}' taskCapture='{taskCapture.Display}' cancel='{cancel.Display}' cancelChord='{cancelChord.Display}' copyLast='{copyLast.Display}' retypeLast='{retypeLast.Display}'");
     }
 
     public void Install()
@@ -244,6 +250,17 @@ public sealed class LowLevelKeyHookService : IDisposable
             // Don't swallow Escape — users may want it to still cancel dialogs etc.
         }
 
+        // Unlike Escape this is swallowed: it's a chord nobody expects to reach the app.
+        if (!_cancelChord.IsEmpty && vk == _cancelChord.Vk && isDown)
+        {
+            var modsPressed = ObservedMods();
+            if ((_cancelChord.Required & modsPressed) == _cancelChord.Required)
+            {
+                try { OnCancel?.Invoke(); } catch (Exception ex) { Log.Error($"OnCancel: {ex}"); }
+                return (IntPtr)1;
+            }
+        }
+
         // Copy-last match. Checked before the trigger so chords that share the same VK
         // (e.g. Ctrl+Alt+Space trigger and Ctrl+Alt+Shift+Space copy-last) don't both fire.
         if (!_copyLast.IsEmpty && vk == _copyLast.Vk && isDown)
@@ -252,6 +269,16 @@ public sealed class LowLevelKeyHookService : IDisposable
             if ((_copyLast.Required & modsPressed) == _copyLast.Required)
             {
                 DispatchCopyLast();
+                return (IntPtr)1;
+            }
+        }
+
+        if (!_retypeLast.IsEmpty && vk == _retypeLast.Vk && isDown)
+        {
+            var modsPressed = ObservedMods();
+            if ((_retypeLast.Required & modsPressed) == _retypeLast.Required)
+            {
+                DispatchRetypeLast();
                 return (IntPtr)1;
             }
         }
@@ -327,6 +354,20 @@ public sealed class LowLevelKeyHookService : IDisposable
         app.Dispatcher.BeginInvoke(new Action(() =>
         {
             try { OnTaskCapture?.Invoke(pressed); } catch (Exception ex) { Log.Error($"OnTaskCapture: {ex}"); }
+        }));
+    }
+
+    private void DispatchRetypeLast()
+    {
+        var app = Application.Current;
+        if (app is null)
+        {
+            try { OnRetypeLast?.Invoke(); } catch (Exception ex) { Log.Error($"OnRetypeLast: {ex}"); }
+            return;
+        }
+        app.Dispatcher.BeginInvoke(new Action(() =>
+        {
+            try { OnRetypeLast?.Invoke(); } catch (Exception ex) { Log.Error($"OnRetypeLast: {ex}"); }
         }));
     }
 

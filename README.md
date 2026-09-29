@@ -251,9 +251,11 @@ Download button or place the file manually, then apply the setting again.
 | **Ctrl + Space** | Dictate — transcribe and paste into the focused field |
 | **Ctrl + Shift + Space** | Task capture — transcribe straight to the inbox folder, no paste |
 | **Escape** | Cancel an in-flight recording |
+| **Ctrl + Shift + X** | Cancel chord — works over Citrix, which swallows plain Escape. On by default; toggle in Settings |
 | **Ctrl + Shift + C** | Copy the last transcript back to the clipboard |
+| **Ctrl + Shift + V** | Retype the last transcript key by key — recovery into Citrix, where Ctrl+V can't reach the local clipboard |
 
-All four are rebindable in Settings. Pick chords that don't collide with anything
+All are rebindable in Settings. Pick chords that don't collide with anything
 else hooking the keyboard globally — including another copy of Handy.
 
 **Task capture** is for dictating a thought without derailing what you're doing:
