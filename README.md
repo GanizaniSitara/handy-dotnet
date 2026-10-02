@@ -53,7 +53,7 @@ calling out:
   `CitrixWorkspaceApp`, `Workspace`), Direct paste uses a separate
   per-char delay so the client's keystroke forwarding doesn't drop or
   reorder Unicode events. Local apps keep the fast (zero-delay) path.
-- **Copy-last-transcript hotkey** (default `Ctrl+Shift+C`) puts
+- **Copy-last-transcript hotkey** (default `Alt+Shift+C`) puts
   the most recent transcript back on the clipboard. Recovery path when a
   paste fails silently — common in VDI / Citrix / integrity-level-mismatch
   terminal windows.
