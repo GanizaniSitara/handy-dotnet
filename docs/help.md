@@ -24,8 +24,8 @@ The shortcuts are all configurable on the **General** tab.
 | Ctrl+Space | Start and stop dictating |
 | Escape | Cancel and discard |
 | Ctrl+Shift+X | Cancel and discard — also works over Citrix (can be turned off) |
-| Ctrl+Shift+C | Copy the last transcript to the clipboard again |
-| Ctrl+Shift+V | Type the last transcript again, key by key — works into Citrix |
+| Alt+Shift+C | Copy the last transcript to the clipboard again |
+| Alt+Shift+V | Type the last transcript again, key by key — works into Citrix |
 | Ctrl+Shift+Space | Send the dictation to your task inbox instead of typing it |
 
 ## Where The Text Goes

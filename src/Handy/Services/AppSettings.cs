@@ -38,12 +38,12 @@ public sealed class AppSettings
     /// <summary>Recovery hotkey: copies the most recent transcription back onto the clipboard
     /// without triggering paste. Useful when the auto-paste failed silently (e.g. terminal
     /// integrity-level mismatch) and the user wants to paste it manually somewhere else.</summary>
-    public string CopyLastHotkey { get; set; } = "Ctrl+Shift+C";
+    public string CopyLastHotkey { get; set; } = "Alt+Shift+C";
 
     /// <summary>Recovery hotkey: types the most recent transcription into the focused window
     /// character by character (Direct injection), for targets where Ctrl+V can't reach the
     /// local clipboard — notably a Citrix desktop with clipboard redirection disabled.</summary>
-    public string RetypeLastHotkey { get; set; } = "Ctrl+Shift+V";
+    public string RetypeLastHotkey { get; set; } = "Alt+Shift+V";
 
     /// <summary>Push-to-talk (hold) vs. toggle.</summary>
     public bool PushToTalk { get; set; } = false;
