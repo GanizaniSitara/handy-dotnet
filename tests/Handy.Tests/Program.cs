@@ -126,6 +126,7 @@ AssertWhisperVocabularyPromptBuilder();
 AssertSpeculativeCachePolicy();
 AssertTranscriptSplicer();
 AssertTaskCaptureSettingsMigration();
+AssertCancelChordSettingsMigration();
 AssertTaskCaptureWriter();
 AssertPasteTargetPolicy();
 AssertTextInjectionService();
@@ -230,9 +231,47 @@ static void AssertTaskCaptureSettingsMigration()
 
         var migrated = AppSettings.Load(dir);
 
-        AssertEqual(3, migrated.SettingsVersion, "task capture migration: settings version");
+        AssertEqual(4, migrated.SettingsVersion, "task capture migration: settings version");
         AssertEqual("Ctrl+Space", migrated.Hotkey, "task capture migration: ordinary hotkey");
         AssertEqual("Ctrl+Shift+Space", migrated.TaskCaptureHotkey, "task capture migration: intake hotkey");
+    }
+    finally
+    {
+        try { Directory.Delete(dir, recursive: true); } catch { }
+    }
+}
+
+static void AssertCancelChordSettingsMigration()
+{
+    var dir = Path.Combine(Path.GetTempPath(), "Handy.Tests", Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(dir);
+    try
+    {
+        var defaults = AppSettings.Load(dir);
+        AssertEqual("Alt+Shift+X", defaults.CancelChordHotkey, "cancel chord: fresh default");
+        var cancel = Hotkey.Parse(defaults.CancelChordHotkey);
+        AssertEqual(Hotkey.Mods.Alt | Hotkey.Mods.Shift, cancel.Required, "cancel chord: modifiers");
+        AssertEqual((uint)'X', cancel.Vk, "cancel chord: key");
+        foreach (var chord in new[] { defaults.Hotkey, defaults.TaskCaptureHotkey, defaults.CancelHotkey,
+                                     defaults.CopyLastHotkey, defaults.RetypeLastHotkey })
+            AssertEqual(false, Hotkey.Parse(chord).Vk == cancel.Vk, "cancel chord: no default key collision");
+
+        foreach (var chord in new[] { "Ctrl+Shift+X", "ctrl+shift+x", "Ctrl+Alt+Q", "Alt+Shift+X" })
+        {
+            File.WriteAllText(Path.Combine(dir, "settings.json"), JsonSerializer.Serialize(new
+            {
+                settingsVersion = 3,
+                cancelChordHotkey = chord,
+                cancelChordEnabled = false,
+            }));
+            var loaded = AppSettings.Load(dir);
+            var expected = chord.Equals("Ctrl+Shift+X", StringComparison.OrdinalIgnoreCase) ? "Alt+Shift+X" : chord;
+            AssertEqual(expected, loaded.CancelChordHotkey, "cancel chord: migration or custom preservation");
+            AssertEqual(false, loaded.CancelChordEnabled, "cancel chord: disabled state preserved");
+            using var saved = JsonDocument.Parse(File.ReadAllText(Path.Combine(dir, "settings.json")));
+            AssertEqual(expected, saved.RootElement.GetProperty("cancelChordHotkey").GetString(), "cancel chord: persisted");
+            AssertEqual(expected, AppSettings.Load(dir).CancelChordHotkey, "cancel chord: reload stable");
+        }
     }
     finally
     {
