@@ -13,7 +13,7 @@ namespace Handy.Services;
 /// </summary>
 public sealed class AppSettings
 {
-    private const int CurrentSettingsVersion = 3;
+    private const int CurrentSettingsVersion = 4;
 
     public int SettingsVersion { get; set; } = CurrentSettingsVersion;
 
@@ -22,7 +22,7 @@ public sealed class AppSettings
 
     /// <summary>Second cancel chord. A Citrix viewer keeps plain keys such as Escape for the
     /// remote desktop but lets modifier chords reach our hook, so this one works over Citrix.</summary>
-    public string CancelChordHotkey { get; set; } = "Ctrl+Shift+X";
+    public string CancelChordHotkey { get; set; } = "Alt+Shift+X";
 
     /// <summary>Turns <see cref="CancelChordHotkey"/> on or off. On by default.</summary>
     public bool CancelChordEnabled { get; set; } = true;
@@ -257,6 +257,13 @@ public sealed class AppSettings
         bool hasTaskCaptureHotkey)
     {
         var migrated = false;
+
+        if (string.Equals(s.CancelChordHotkey, "Ctrl+Shift+X", StringComparison.OrdinalIgnoreCase))
+        {
+            s.CancelChordHotkey = "Alt+Shift+X";
+            migrated = true;
+            Log.Info("Settings migration: cancel chord Ctrl+Shift+X -> Alt+Shift+X.");
+        }
 
         s.DomainCorrections ??= new List<DomainCorrection>();
         if (string.IsNullOrWhiteSpace(s.PasteFocusPolicy))
