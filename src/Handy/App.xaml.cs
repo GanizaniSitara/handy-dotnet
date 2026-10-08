@@ -1172,7 +1172,9 @@ public partial class App : Application
     /// character. The Ctrl+V recovery route fails into a Citrix desktop whose
     /// clipboard redirection is off; keystrokes still get through.
     /// </summary>
-    private void RetypeLastTranscript()
+    private readonly RecoveryRetypeRunner _retypeRunner = new();
+
+    private async void RetypeLastTranscript()
     {
         var entry = _history?.LastEntry();
         var injector = _injector;
@@ -1197,16 +1199,20 @@ public partial class App : Application
             PasteFocusPolicy        = "PasteAnyway",
             AutoSubmitKey           = "None",
         };
-        Task.Run(() =>
+        try
         {
-            // The hotkey's modifiers are still physically down when it fires;
-            // typing now would turn "a" into Ctrl+Shift+A. Wait for release.
-            var sw = Stopwatch.StartNew();
-            while (sw.ElapsedMilliseconds < 3000 && AnyModifierDown()) Thread.Sleep(20);
-            Thread.Sleep(50);
-            var result = injector.Paste(text, settings, IntPtr.Zero);
-            Log.Info($"retype-last-transcription: {text.Length} chars, outcome={result.Outcome}, citrix={result.Citrix}");
-        });
+            var outcome = await _retypeRunner.RunAsync(AnyModifierDown, () =>
+            {
+                var result = injector.Paste(text, settings, IntPtr.Zero);
+                Log.Info($"retype-last-transcription: {text.Length} chars, outcome={result.Outcome}, citrix={result.Citrix}");
+            });
+            if (outcome != RecoveryRetypeOutcome.Completed)
+                Log.Warn($"retype-last-transcription: skipped ({outcome})");
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"retype-last-transcription: failed: {ex}");
+        }
     }
 
     private static bool AnyModifierDown()
