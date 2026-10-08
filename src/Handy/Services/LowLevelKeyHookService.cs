@@ -290,6 +290,10 @@ public sealed class LowLevelKeyHookService : IDisposable
         {
             if (_copyLastActive)
             {
+                // A synthetic chord is not a repeat/release of the physical
+                // recovery key. Let paste tooling deliver it unchanged.
+                if ((data.flags & 0x10) != 0)
+                    return NativeMethods.CallNextHookEx(_hook, nCode, wParam, lParam);
                 if (isUp) { _copyLastActive = false; _copyLastUpPolls = 0; }
                 return (IntPtr)1;
             }
@@ -306,6 +310,8 @@ public sealed class LowLevelKeyHookService : IDisposable
         {
             if (_retypeLastActive)
             {
+                if ((data.flags & 0x10) != 0)
+                    return NativeMethods.CallNextHookEx(_hook, nCode, wParam, lParam);
                 if (isUp) { _retypeLastActive = false; _retypeLastUpPolls = 0; }
                 return (IntPtr)1;
             }
