@@ -258,6 +258,21 @@ public sealed class AppSettings
     {
         var migrated = false;
 
+        // Retire the old defaults: the global hook otherwise steals ordinary
+        // terminal copy/paste even after upgrading. Preserve custom chords.
+        if (string.Equals(s.CopyLastHotkey, "Ctrl+Shift+C", StringComparison.OrdinalIgnoreCase))
+        {
+            s.CopyLastHotkey = "Alt+Shift+C";
+            migrated = true;
+            Log.Info("Settings migration: copy-last Ctrl+Shift+C -> Alt+Shift+C.");
+        }
+        if (string.Equals(s.RetypeLastHotkey, "Ctrl+Shift+V", StringComparison.OrdinalIgnoreCase))
+        {
+            s.RetypeLastHotkey = "Alt+Shift+V";
+            migrated = true;
+            Log.Info("Settings migration: retype-last Ctrl+Shift+V -> Alt+Shift+V.");
+        }
+
         if (string.Equals(s.CancelChordHotkey, "Ctrl+Shift+X", StringComparison.OrdinalIgnoreCase))
         {
             s.CancelChordHotkey = "Alt+Shift+X";
