@@ -455,6 +455,15 @@ public partial class App : Application
 
     private void StartRecording(CaptureDestination destination)
     {
+        // Capture/recovery admission runs on the dispatcher. Retype claims its
+        // busy flag before yielding, so neither path can start over the other.
+        // In particular, a second recording must not reset generation/spec state
+        // while the previous transcription is still finishing.
+        if (_recording || _transcribing || _retypeRunner.IsBusy)
+        {
+            Log.Warn("Cannot start recording while dictation or recovery is active.");
+            return;
+        }
         if (_asr is null || !_asr.IsReady)
         {
             Log.Warn("Model not loaded; cannot start recording.");
@@ -1176,6 +1185,11 @@ public partial class App : Application
 
     private async void RetypeLastTranscript()
     {
+        if (_recording || _transcribing)
+        {
+            Log.Warn("retype-last-transcription: ignored while recording or transcription is in flight");
+            return;
+        }
         var entry = _history?.LastEntry();
         var injector = _injector;
         if (entry is null || string.IsNullOrEmpty(entry.Text) || injector is null)
@@ -1184,12 +1198,6 @@ public partial class App : Application
             _feedback?.PlayCancel();
             return;
         }
-        if (_transcribing)
-        {
-            Log.Warn("retype-last-transcription: ignored while a transcription is in flight");
-            return;
-        }
-
         var text = entry.Text;
         var settings = new AppSettings
         {

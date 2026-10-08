@@ -12,6 +12,8 @@ public sealed class RecoveryRetypeRunner
 {
     private int _busy;
 
+    public bool IsBusy => Volatile.Read(ref _busy) != 0;
+
     public async Task<RecoveryRetypeOutcome> RunAsync(
         Func<bool> modifiersDown, Action inject, TimeSpan? releaseTimeout = null)
     {
