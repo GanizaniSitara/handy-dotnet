@@ -20,9 +20,9 @@ static class HookChecks
         var buffer = Marshal.AllocHGlobal(Marshal.SizeOf<KeyEvent>());
         try
         {
-            IntPtr Key(uint vk, bool down)
+            IntPtr Key(uint vk, bool down, uint flags = 0)
             {
-                Marshal.StructureToPtr(new KeyEvent { Vk = vk }, buffer, false);
+                Marshal.StructureToPtr(new KeyEvent { Vk = vk, Flags = flags }, buffer, false);
                 return (IntPtr)callback.Invoke(hook, new object[] { 0, new IntPtr(down ? 0x100 : 0x101), buffer })!;
             }
             Key(0xA4, true); // left Alt
@@ -35,6 +35,12 @@ static class HookChecks
             if (copies != 2) throw new Exception("second deliberate copy press did not fire");
             for (var i = 0; i < 20; i++) Key(0x56, true);
             if (retypes != 1) throw new Exception($"held retype shortcut dispatched {retypes} times; expected 1");
+            // Clipboard fallback may inject V before the user's physical V-up.
+            // Its synthetic down/up must pass through without clearing the latch.
+            if (Key(0x56, true, 0x10) == new IntPtr(1)) throw new Exception("injected paste key swallowed by recovery latch");
+            Key(0x56, false, 0x10);
+            Key(0x56, true);
+            if (retypes != 1) throw new Exception("injected key-up cleared physical recovery latch");
             Key(0xA4, false);
             Key(0xA0, false);
             if (Key(0x56, false) != new IntPtr(1)) throw new Exception("retype key-up leaked after modifier release");
