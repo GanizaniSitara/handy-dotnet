@@ -31,6 +31,7 @@ try
     }
     HookChecks.Run();
     await RetypeChecks.Run();
+    await CaptureAdmissionChecks.Run();
     Console.WriteLine("Recovery shortcut migration and hook checks passed.");
 }
 catch (Exception ex)
