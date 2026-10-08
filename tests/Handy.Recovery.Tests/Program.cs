@@ -30,6 +30,7 @@ try
             "migration persists and is idempotent");
     }
     HookChecks.Run();
+    await RetypeChecks.Run();
     Console.WriteLine("Recovery shortcut migration and hook checks passed.");
 }
 catch (Exception ex)
