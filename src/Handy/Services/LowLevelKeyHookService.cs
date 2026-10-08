@@ -52,6 +52,10 @@ public sealed class LowLevelKeyHookService : IDisposable
     private Hotkey _retypeLast;
     private bool   _triggerActive;
     private bool   _taskCaptureActive;
+    private bool   _copyLastActive;
+    private bool   _retypeLastActive;
+    private int    _copyLastUpPolls;
+    private int    _retypeLastUpPolls;
 
     // Per-entry latch state, indexed against ModifierVks, plus the consecutive
     // count of polls where the latch disagreed with the physical key.
@@ -85,6 +89,8 @@ public sealed class LowLevelKeyHookService : IDisposable
         _retypeLast  = retypeLast;
         _triggerActive = false;
         _taskCaptureActive = false;
+        _copyLastActive = _retypeLastActive = false;
+        _copyLastUpPolls = _retypeLastUpPolls = 0;
         ResetTrackedModifiers();
         Log.Info($"Hotkey: trigger='{trigger.Display}' taskCapture='{taskCapture.Display}' cancel='{cancel.Display}' cancelChord='{cancelChord.Display}' copyLast='{copyLast.Display}' retypeLast='{retypeLast.Display}'");
     }
@@ -101,7 +107,7 @@ public sealed class LowLevelKeyHookService : IDisposable
         if (_hook == IntPtr.Zero)
             Log.Error($"SetWindowsHookEx failed, error={Marshal.GetLastWin32Error()}");
 
-        _stuckKeyTimer ??= new Timer(_ => { ReconcileModifiers(); PollStuckTrigger(); },
+        _stuckKeyTimer ??= new Timer(_ => { ReconcileModifiers(); PollStuckTrigger(); PollStuckRecovery(); },
                                      null, StuckPollMs, StuckPollMs);
     }
 
@@ -136,6 +142,23 @@ public sealed class LowLevelKeyHookService : IDisposable
             DispatchTrigger(false);
         }
         catch (Exception ex) { Log.Error($"PollStuckTrigger: {ex.Message}"); }
+    }
+
+    private void PollStuckRecovery()
+    {
+        // Like the recording chord, a recovery chord can lose its key-up on a
+        // desktop switch. Re-arm after two up observations, without replaying it.
+        Recover(_copyLast, ref _copyLastActive, ref _copyLastUpPolls);
+        Recover(_retypeLast, ref _retypeLastActive, ref _retypeLastUpPolls);
+
+        static void Recover(Hotkey chord, ref bool active, ref int polls)
+        {
+            if (!active || chord.IsEmpty || KeyIsDown(chord.Vk)) { polls = 0; return; }
+            if (++polls < StuckPollsBeforeRelease) return;
+            active = false;
+            polls = 0;
+            Log.Warn($"Recovery key '{chord.Display}' physically up without key-up; re-armed.");
+        }
     }
 
     /// <summary>
@@ -263,21 +286,33 @@ public sealed class LowLevelKeyHookService : IDisposable
 
         // Copy-last match. Checked before the trigger so chords that share the same VK
         // (e.g. Ctrl+Alt+Space trigger and Ctrl+Alt+Shift+Space copy-last) don't both fire.
-        if (!_copyLast.IsEmpty && vk == _copyLast.Vk && isDown)
+        if (!_copyLast.IsEmpty && vk == _copyLast.Vk)
         {
-            var modsPressed = ObservedMods();
-            if ((_copyLast.Required & modsPressed) == _copyLast.Required)
+            if (_copyLastActive)
             {
+                if (isUp) { _copyLastActive = false; _copyLastUpPolls = 0; }
+                return (IntPtr)1;
+            }
+            var modsPressed = ObservedMods();
+            if (isDown && (_copyLast.Required & modsPressed) == _copyLast.Required)
+            {
+                _copyLastActive = true;
                 DispatchCopyLast();
                 return (IntPtr)1;
             }
         }
 
-        if (!_retypeLast.IsEmpty && vk == _retypeLast.Vk && isDown)
+        if (!_retypeLast.IsEmpty && vk == _retypeLast.Vk)
         {
-            var modsPressed = ObservedMods();
-            if ((_retypeLast.Required & modsPressed) == _retypeLast.Required)
+            if (_retypeLastActive)
             {
+                if (isUp) { _retypeLastActive = false; _retypeLastUpPolls = 0; }
+                return (IntPtr)1;
+            }
+            var modsPressed = ObservedMods();
+            if (isDown && (_retypeLast.Required & modsPressed) == _retypeLast.Required)
+            {
+                _retypeLastActive = true;
                 DispatchRetypeLast();
                 return (IntPtr)1;
             }

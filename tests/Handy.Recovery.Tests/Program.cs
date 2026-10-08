@@ -29,7 +29,8 @@ try
         Check(reloaded.CopyLastHotkey == chords.Item3 && reloaded.RetypeLastHotkey == chords.Item4,
             "migration persists and is idempotent");
     }
-    Console.WriteLine("Recovery shortcut migration checks passed.");
+    HookChecks.Run();
+    Console.WriteLine("Recovery shortcut migration and hook checks passed.");
 }
 catch (Exception ex)
 {
