@@ -18,6 +18,11 @@ public enum SessionPhase
     Post,
     Paste,
     Shutdown,
+    Stopping,
+    Vad,
+    AsrWait,
+    History,
+    Clipboard,
 }
 
 /// <summary>State of the previous run, recovered at startup.</summary>
@@ -29,6 +34,7 @@ public sealed class PreviousSession
     public DateTime StartedUtc { get; set; }
     public DateTime HeartbeatUtc { get; set; }
     public string Phase { get; set; } = nameof(SessionPhase.Idle);
+    public long PhaseAgeMs { get; set; }
     public long WorkingSetBytes { get; set; }
     public long GcTotalMemoryBytes { get; set; }
 }
@@ -59,7 +65,8 @@ public sealed class SessionTracker : IDisposable
 
     private readonly string _path;
     private readonly object _lock = new();
-    private readonly Timer? _heartbeat;
+    private readonly ITimer? _heartbeat;
+    private readonly TimeProvider _time;
 
     private readonly string _sessionId = Guid.NewGuid().ToString("N")[..8];
     private readonly string _version;
@@ -68,14 +75,18 @@ public sealed class SessionTracker : IDisposable
     private SessionPhase _phase = SessionPhase.Idle;
     private bool _closed;
     private bool _memoryWarned;
+    private long _phaseStarted;
+    private bool _phaseWarned;
 
     public string SessionId => _sessionId;
 
-    public SessionTracker(string dataDir, string version)
+    public SessionTracker(string dataDir, string version, TimeProvider? timeProvider = null)
     {
         _path = Path.Combine(dataDir, FileName);
         _version = version;
-        _heartbeat = new Timer(_ => Touch(), null, HeartbeatInterval, HeartbeatInterval);
+        _time = timeProvider ?? TimeProvider.System;
+        _phaseStarted = _time.GetTimestamp();
+        _heartbeat = _time.CreateTimer(_ => Touch(), null, HeartbeatInterval, HeartbeatInterval);
     }
 
     /// <summary>
@@ -109,6 +120,8 @@ public sealed class SessionTracker : IDisposable
         {
             if (_closed || _phase == phase) return;
             _phase = phase;
+            _phaseStarted = _time.GetTimestamp();
+            _phaseWarned = false;
         }
         Write();
     }
@@ -146,9 +159,19 @@ public sealed class SessionTracker : IDisposable
                 StartedUtc         = _startedUtc,
                 HeartbeatUtc       = DateTime.UtcNow,
                 Phase              = _phase.ToString(),
+                PhaseAgeMs         = (long)_time.GetElapsedTime(_phaseStarted).TotalMilliseconds,
                 WorkingSetBytes    = workingSet,
                 GcTotalMemoryBytes = GC.GetTotalMemory(forceFullCollection: false),
             };
+
+            // A live timer is not proof that the dictation worker is progressing.
+            // Report prolonged work once per phase; long ASR can be legitimate.
+            if (!_phaseWarned && IsProlongedPhase(_phase, snapshot.PhaseAgeMs))
+            {
+                _phaseWarned = true;
+                Log.Warn($"Session: prolonged phase id={_sessionId} phase={_phase} " +
+                         $"phaseAgeMs={snapshot.PhaseAgeMs}; heartbeat alive, progress unconfirmed");
+            }
 
             if (!_memoryWarned && workingSet > MemoryWarnThresholdBytes)
             {
@@ -174,4 +197,11 @@ public sealed class SessionTracker : IDisposable
     {
         _heartbeat?.Dispose();
     }
+
+    public static bool IsProlongedPhase(SessionPhase phase, long ageMs) => phase switch
+    {
+        SessionPhase.Idle or SessionPhase.Listening or SessionPhase.Shutdown => false,
+        SessionPhase.Asr or SessionPhase.AsrWait or SessionPhase.SpecPrepass => ageMs >= 120_000,
+        _ => ageMs >= 30_000,
+    };
 }

@@ -191,7 +191,7 @@ public partial class App : Application
             var id      = string.IsNullOrEmpty(previous.SessionId) ? "?" : previous.SessionId;
             var version = string.IsNullOrEmpty(previous.Version)   ? "?" : previous.Version;
             Log.Error($"Session: previous session did not exit cleanly (id={id} version={version} " +
-                      $"pid={previous.Pid} lastPhase={previous.Phase} heartbeatAge={heartbeatAge})");
+                      $"pid={previous.Pid} lastPhase={previous.Phase} phaseAgeMs={previous.PhaseAgeMs} heartbeatAge={heartbeatAge})");
         }
         _session.Start();
 
@@ -676,6 +676,7 @@ public partial class App : Application
         var sw = Stopwatch.StartNew();
 
         var stopSw = Stopwatch.StartNew();
+        _session?.SetPhase(SessionPhase.Stopping);
         var samples = await _audio!.StopAsync(_settings.PostRollMs);
         stopSw.Stop();
         var stopMs = stopSw.ElapsedMilliseconds;
@@ -713,7 +714,7 @@ public partial class App : Application
 
         _feedback?.PlayStop();
         SetUiState(isRecording: false, isTranscribing: true, hideOverlay: false);
-        _session?.SetPhase(SessionPhase.Asr);
+        _session?.SetPhase(SessionPhase.Vad);
         _transcribing = true;
         int rawSampleCount = samples.Length;
         int vadOutCount = samples.Length;
@@ -786,6 +787,7 @@ public partial class App : Application
                 raw = cache.RawText;
                 rawLen = raw.Length;
                 Log.Info($"Raw: \"{raw}\" (spec prefix-only)");
+                _session?.SetPhase(SessionPhase.Post);
                 text = PostProcessTranscript(raw, _settings);
                 asrMs = 0;
                 specPrefixUsed = true;
@@ -796,11 +798,13 @@ public partial class App : Application
             {
                 // Either cold pass or prefix+tail — both need _asrGate so we
                 // don't collide with an in-flight prepass on the same ASR.
+                _session?.SetPhase(SessionPhase.AsrWait);
                 await _asrGate.WaitAsync().ConfigureAwait(false);
                 try
                 {
                     // Re-evaluate the cache: a prepass may have landed while
                     // we were waiting on the gate.
+                    _session?.SetPhase(SessionPhase.Vad);
                     cache = _specCache;
                     RecomputeTailMetrics(cache);
                     decision = SpeculativeCachePolicy.Decide(rawCaptureSamples.Length, snapRawSamples, tailVadSamples, _settings);
@@ -811,6 +815,7 @@ public partial class App : Application
                         raw = cache.RawText;
                         rawLen = raw.Length;
                         Log.Info($"Raw: \"{raw}\" (spec prefix-only)");
+                        _session?.SetPhase(SessionPhase.Post);
                         text = PostProcessTranscript(raw, _settings);
                         asrMs = 0;
                         specPrefixUsed = true;
@@ -831,6 +836,7 @@ public partial class App : Application
                             tailForAsr = _vad.Trim(tailRaw, _settings.VadThreshold, _settings.VadPaddingMs);
 
                         var asrSw = Stopwatch.StartNew();
+                        _session?.SetPhase(SessionPhase.Asr);
                         var tailRawText = await asr.TranscribeAsync(tailForAsr, CreateTranscriptionOptions(_settings)).ConfigureAwait(false);
                         asrSw.Stop();
                         specTailAsrMs = asrSw.ElapsedMilliseconds;
@@ -840,6 +846,7 @@ public partial class App : Application
                         rawLen = raw.Length;
                         Log.Info($"Raw: \"{raw}\" (spec prefix+tail)");
 
+                        _session?.SetPhase(SessionPhase.Post);
                         text = PostProcessTranscript(raw, _settings);
                         specPrefixUsed = true;
                         specStaleMs = (Stopwatch.GetTimestamp() - cache.FinishedTicks) * 1000 / Stopwatch.Frequency;
@@ -848,11 +855,13 @@ public partial class App : Application
                     else
                     {
                         var asrSw = Stopwatch.StartNew();
+                        _session?.SetPhase(SessionPhase.Asr);
                         raw = await asr.TranscribeAsync(samples, CreateTranscriptionOptions(_settings)).ConfigureAwait(false);
                         asrSw.Stop();
                         asrMs = asrSw.ElapsedMilliseconds;
                         rawLen = raw?.Length ?? 0;
                         Log.Info($"Raw: \"{raw}\"");
+                        _session?.SetPhase(SessionPhase.Post);
                         text = PostProcessTranscript(raw ?? string.Empty, _settings);
                     }
                 }
@@ -885,6 +894,7 @@ public partial class App : Application
             else if (!string.IsNullOrWhiteSpace(text))
             {
                 Log.Info("Flow: before history.Add");
+                _session?.SetPhase(SessionPhase.History);
                 var historySw = Stopwatch.StartNew();
                 _history?.Add(text);
                 historySw.Stop();
@@ -944,6 +954,7 @@ public partial class App : Application
                         CopyTextToClipboard(text, "pasteThrew");
                         _tray?.Notify("Handy.NET", "Paste failed — transcript copied to clipboard.");
                     }
+                    _session?.SetPhase(SessionPhase.Clipboard);
                     var copySw = Stopwatch.StartNew();
                     // Already on the clipboard as the recovery copy; don't
                     // overwrite it (and don't pay for a second clipboard round
