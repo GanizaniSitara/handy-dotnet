@@ -14,6 +14,7 @@ public interface IWindowBridge
     string DescribeWindow(IntPtr hwnd);
     string DescribeForegroundWindow();
     bool IsCitrixForeground();
+    bool IsWindowsTerminalForeground();
     bool IsElevationMismatch(IntPtr hwnd, out string targetName, out int lastErr);
     uint SendUnicode(char ch);
     uint SendKey(ushort vk, bool down);
@@ -74,6 +75,19 @@ public sealed class DefaultWindowBridge : IWindowBridge
                     return true;
             }
             return false;
+        }
+        catch { return false; }
+    }
+
+    public bool IsWindowsTerminalForeground()
+    {
+        try
+        {
+            var hwnd = NativeMethods.GetForegroundWindow();
+            if (hwnd == IntPtr.Zero) return false;
+            var cls = new System.Text.StringBuilder(128);
+            NativeMethods.GetClassName(hwnd, cls, cls.Capacity);
+            return cls.ToString() == "CASCADIA_HOSTING_WINDOW_CLASS";
         }
         catch { return false; }
     }
