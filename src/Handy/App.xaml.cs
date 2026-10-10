@@ -686,7 +686,19 @@ public partial class App : Application
 
         var stopSw = Stopwatch.StartNew();
         _session?.SetPhase(SessionPhase.Stopping);
-        var samples = await _audio!.StopAsync(_settings.PostRollMs);
+        float[] samples;
+        try
+        {
+            samples = await _audio!.StopAsync(_settings.PostRollMs).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _transcribing = false;
+            _session?.SetPhase(SessionPhase.Idle);
+            SetUiState(isRecording: false, isTranscribing: false, hideOverlay: true);
+            Log.Error($"StopAsync threw: {ex}");
+            return;
+        }
         stopSw.Stop();
         var stopMs = stopSw.ElapsedMilliseconds;
         Log.Info($"Recording stopped. {samples.Length} samples captured (post-roll {_settings.PostRollMs} ms).");
@@ -1119,7 +1131,7 @@ public partial class App : Application
                 UpdateOverlay(RecordingOverlay.State.Transcribing);
         }
 
-        if (Dispatcher.CheckAccess()) Apply();
+        if (Dispatcher is null || Dispatcher.CheckAccess()) Apply();
         else Dispatcher.Invoke(Apply);
     }
 
