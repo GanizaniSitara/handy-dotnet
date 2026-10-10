@@ -47,6 +47,21 @@ static class CaptureAdmissionChecks
             }
             finally { release.Set(); }
             await work;
+
+            // Regression: StopAndTranscribe throwing before its internal try/finally
+            // used to leak the _transcribing flag, preventing future dictations.
+            Set("_transcribing", false);
+            var stopMethod = typeof(App).GetMethod("StopAndTranscribe", BindingFlags.Instance | BindingFlags.NonPublic)!;
+            stopMethod.Invoke(app, null); // Will throw NRE on _audio!.StopAsync since _audio is null
+            // Wait for the async void method to hit the catch block and update the flag
+            for (int i = 0; i < 50; i++)
+            {
+                if (!(bool)typeof(App).GetField("_transcribing", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(app)!) break;
+                await Task.Delay(10);
+            }
+            if ((bool)typeof(App).GetField("_transcribing", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(app)!)
+                throw new Exception("StopAndTranscribe leaked _transcribing flag on exception.");
+            Expect("StopAsync threw: System.NullReferenceException");
         }
         finally { sink.SetValue(null, previous); }
         Console.WriteLine("Capture/recovery admission checks passed without constructing a WPF Application.");
@@ -59,7 +74,12 @@ static class CaptureAdmissionChecks
         }
         void Expect(string message)
         {
-            if (!lines.Exists(x => x.Contains(message))) throw new Exception("Missing admission rejection: " + message);
+            if (!lines.Exists(x => x.Contains(message)))
+            {
+                Console.WriteLine("Actual lines:");
+                foreach(var l in lines) Console.WriteLine(l);
+                throw new Exception("Missing admission rejection: " + message);
+            }
             lines.Clear();
         }
     }
