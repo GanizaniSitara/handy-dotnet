@@ -671,6 +671,16 @@ static void AssertTextInjectionService()
         AssertEqual(PasteOutcome.Delivered, res.Outcome, "citrix: delivered");
         AssertEqual(true, res.Citrix, "citrix: flagged on result");
     }
+
+    // 16. Direct into Windows Terminal pastes in one go instead of typing per key
+    {
+        var mock = new MockWindowBridge { ForegroundWindow = new IntPtr(0x1000), WindowsTerminal = true };
+        var injector = new TextInjectionService(mock);
+        var res = injector.Paste("Terminal text", new AppSettings { PasteMethod = "Direct" }, new IntPtr(0x1000));
+        AssertEqual(PasteOutcome.Delivered, res.Outcome, "wt: delivered");
+        AssertEqual(0, mock.SentChars.Count, "wt: no per-char typing");
+        AssertEqual("Terminal text", mock.ClipboardContent, "wt: transcript went via clipboard");
+    }
 }
 
 sealed class MockWindowBridge : IWindowBridge
@@ -710,6 +720,9 @@ sealed class MockWindowBridge : IWindowBridge
     public string DescribeForegroundWindow() => DescribeWindow(ForegroundWindow);
 
     public bool IsCitrixForeground() => Citrix;
+
+    public bool WindowsTerminal { get; set; } = false;
+    public bool IsWindowsTerminalForeground() => WindowsTerminal;
 
     public bool IsElevationMismatch(IntPtr hwnd, out string targetName, out int lastErr)
     {

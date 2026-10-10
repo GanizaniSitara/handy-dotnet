@@ -91,6 +91,16 @@ public sealed class TextInjectionService
             return new PasteResult(PasteOutcome.Delivered);
         }
 
+        // Windows Terminal hands each injected key to the shell app as its own
+        // input event, so a TUI that redraws per key (agy, claude) makes a Direct
+        // transcript trickle in for seconds. One Ctrl+V arrives as a single paste.
+        if (string.Equals(method, "Direct", StringComparison.OrdinalIgnoreCase)
+            && _bridge.IsWindowsTerminalForeground())
+        {
+            Log.Info("Paste: Windows Terminal foreground; using CtrlV instead of Direct.");
+            method = "CtrlV";
+        }
+
         if (string.Equals(method, "Direct", StringComparison.OrdinalIgnoreCase))
         {
             var citrix = _bridge.IsCitrixForeground();
