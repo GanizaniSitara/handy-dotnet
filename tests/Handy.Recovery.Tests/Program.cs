@@ -4,10 +4,27 @@ using System.Text.Json;
 using System.Diagnostics;
 using Handy.Services;
 
+if (args.Length == 3 && args[0] == "--download-gpu-model")
+{
+    // --download-gpu-model <models-root> V2|V3 : the same call Settings makes.
+    var variant = args[2] == "V3" ? ModelDownloadService.Variant.V3 : ModelDownloadService.Variant.V2;
+    var last = DateTime.MinValue;
+    var gpuDir = await ModelDownloadService.DownloadGpuAsync(args[1], variant,
+        new Progress<ModelDownloadService.Progress>(p =>
+        {
+            if ((DateTime.UtcNow - last).TotalSeconds < 10 && p.Phase != "Done") return;
+            last = DateTime.UtcNow;
+            Console.WriteLine($"{p.Phase} {p.BytesSoFar / 1048576} MB");
+        }), default);
+    Console.WriteLine($"installed {gpuDir} fp32={ParakeetTranscriptionService.HasFp32Models(gpuDir)}");
+    return;
+}
+
 if (args.Length >= 4 && args[0] == "--bench-provider")
 {
-    await PerformanceChecks.BenchProvider(args[1], args[2], args[3], args.Length > 4 ? args[4] : null,
-        args.Length > 5 ? int.Parse(args[5]) : 4, args.Length > 6 ? int.Parse(args[6]) : 0);
+    // --bench-provider <model-dir> <wav> CPU|GPU [passes] [gpu-adapter]
+    await PerformanceChecks.BenchProvider(args[1], args[2], args[3],
+        args.Length > 4 ? int.Parse(args[4]) : 4, args.Length > 5 ? int.Parse(args[5]) : 0);
     return;
 }
 

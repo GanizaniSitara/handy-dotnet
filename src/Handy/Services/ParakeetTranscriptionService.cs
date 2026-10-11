@@ -46,7 +46,7 @@ public sealed class ParakeetTranscriptionService : ITranscriptionService
     private int _disposed;
     public bool IsReady => Volatile.Read(ref _disposed) == 0 && _preproc is not null && _encoder is not null && _decoder is not null && _tok is not null;
 
-    /// <summary>Where the encoder actually runs: "CPU" or "CUDA". Only the
+    /// <summary>Where the encoder actually runs: "CPU" or "GPU". Only the
     /// encoder moves to the GPU; the preprocessor and the per-token decoder
     /// steps are tiny and would lose more to launch and copy overhead than
     /// they gain.</summary>
@@ -57,19 +57,22 @@ public sealed class ParakeetTranscriptionService : ITranscriptionService
     /// when both are present; fp32 is what a GPU wants.</summary>
     public static bool HasInt8Models(string dir) =>
         File.Exists(Path.Combine(dir, "encoder-model.int8.onnx")) && File.Exists(Path.Combine(dir, "decoder_joint-model.int8.onnx"));
+    // The GPU build pairs the fp32 encoder with the int8 decoder (see the
+    // constructor), so either decoder completes it.
     public static bool HasFp32Models(string dir) =>
-        File.Exists(Path.Combine(dir, "encoder-model.onnx")) && File.Exists(Path.Combine(dir, "decoder_joint-model.onnx"));
+        File.Exists(Path.Combine(dir, "encoder-model.onnx")) &&
+        (File.Exists(Path.Combine(dir, "decoder_joint-model.int8.onnx")) || File.Exists(Path.Combine(dir, "decoder_joint-model.onnx")));
 
     // Optimized graphs are opt-in for the offline benchmark, never selected by
     // the tray app until parity and cache compatibility have been established.
     public ParakeetTranscriptionService(string modelDir, string? optimizedModelDir = null, bool loadOptimized = false,
         int encoderThreads = 4, int auxiliaryThreads = 4, bool allowSpinning = true, bool prioritizeInference = false,
-        string executionProvider = "CPU", int cudaDeviceId = 0, string? cudaLibraryDir = null)
+        string executionProvider = "CPU", int gpuDeviceId = 0)
     {
         _prioritizeInference = prioritizeInference;
         try
         {
-            var wantCuda = string.Equals(executionProvider, "CUDA", StringComparison.OrdinalIgnoreCase);
+            var wantGpu = string.Equals(executionProvider, "GPU", StringComparison.OrdinalIgnoreCase);
             var preprocPath = Path.Combine(modelDir, "nemo128.onnx");
             // Encoder: a GPU takes fp32 when it is there; a CPU takes int8 when
             // it is there. Decoder: always int8 when present. Its per-step cost
@@ -77,7 +80,7 @@ public sealed class ParakeetTranscriptionService : ITranscriptionService
             // times the bytes: measured 11 ms per step against under 1 ms.
             var int8Encoder = File.Exists(Path.Combine(modelDir, "encoder-model.int8.onnx"));
             var fp32Encoder = File.Exists(Path.Combine(modelDir, "encoder-model.onnx"));
-            var int8 = int8Encoder && !(wantCuda && fp32Encoder);
+            var int8 = int8Encoder && !(wantGpu && fp32Encoder);
             var encoderPath = Path.Combine(modelDir, int8 ? "encoder-model.int8.onnx" : "encoder-model.onnx");
             var decoderPath = Path.Combine(modelDir, "decoder_joint-model.int8.onnx");
             if (!File.Exists(decoderPath)) decoderPath = Path.Combine(modelDir, "decoder_joint-model.onnx");
@@ -126,8 +129,8 @@ public sealed class ParakeetTranscriptionService : ITranscriptionService
             _preproc = Load(preprocPath);
             Log.Info($"Loaded preprocessor in {sw.ElapsedMilliseconds} ms");
             sw.Restart();
-            _encoder = string.Equals(executionProvider, "CUDA", StringComparison.OrdinalIgnoreCase)
-                ? TryLoadCudaEncoder(encoderPath, cudaDeviceId, cudaLibraryDir) ?? Load(encoderPath)
+            _encoder = wantGpu && !int8
+                ? TryLoadGpuEncoder(encoderPath, gpuDeviceId) ?? Load(encoderPath)
                 : Load(encoderPath);
             Log.Info($"Loaded encoder ({ExecutionProvider}, {(int8 ? "int8" : "fp32")}) in {sw.ElapsedMilliseconds} ms");
             sw.Restart();
@@ -156,52 +159,29 @@ public sealed class ParakeetTranscriptionService : ITranscriptionService
         }
     }
 
-    // The CUDA provider DLL is shipped with the package, but it in turn needs
-    // cudart 12, cuBLAS 12 and cuDNN 9, which are not. A machine that has them
-    // somewhere (a PyTorch install, the CUDA toolkit) names that directory in
-    // settings and it is put on the process PATH before the provider loads.
-    // Any failure here is logged and the encoder falls back to the CPU.
-    private InferenceSession? TryLoadCudaEncoder(string encoderPath, int deviceId, string? libraryDir)
+    // DirectML is Windows' own GPU layer: any DirectX 12 adapter (NVIDIA, AMD,
+    // Intel), nothing to install, and its runtime ships inside the package.
+    // It requires memory patterns off and sequential execution.
+    private InferenceSession? TryLoadGpuEncoder(string encoderPath, int deviceId)
     {
         try
         {
-            if (!string.IsNullOrWhiteSpace(libraryDir) && Directory.Exists(libraryDir))
-            {
-                var path = Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
-                if (!path.Split(';').Any(p => string.Equals(p.TrimEnd('\\'), libraryDir.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase)))
-                    Environment.SetEnvironmentVariable("PATH", libraryDir + ";" + path);
-            }
-            using var cuda = new OrtCUDAProviderOptions();
-            cuda.UpdateOptions(new Dictionary<string, string>
-            {
-                ["device_id"] = deviceId.ToString(),
-                // Dictation audio is a different length every time. The default
-                // EXHAUSTIVE search re-benchmarks cuDNN's convolution kernels
-                // for every new input shape, which is exactly the latency we
-                // are trying to remove. HEURISTIC picks once, cheaply.
-                ["cudnn_conv_algo_search"] = "HEURISTIC",
-                ["arena_extend_strategy"] = "kSameAsRequested",
-            });
             using var opts = new SessionOptions
             {
                 GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL,
-                InterOpNumThreads = 1,
-                IntraOpNumThreads = 2,
+                ExecutionMode = ExecutionMode.ORT_SEQUENTIAL,
+                EnableMemoryPattern = false,
                 EnableCpuMemArena = false,
             };
-            opts.AppendExecutionProvider_CUDA(cuda);
-            // HANDY_ORT_VERBOSE=1 prints every node's provider assignment at
-            // load, which is how to find an op that silently fell back to CPU.
-            if (Environment.GetEnvironmentVariable("HANDY_ORT_VERBOSE") == "1")
-                opts.LogSeverityLevel = 0;
+            opts.AppendExecutionProvider_DML(deviceId);
             var session = new InferenceSession(encoderPath, opts);
-            ExecutionProvider = "CUDA";
-            Log.Info($"Session: Parakeet encoder on CUDA device {deviceId}");
+            ExecutionProvider = "GPU";
+            Log.Info($"Session: Parakeet encoder on DirectML adapter {deviceId}");
             return session;
         }
         catch (Exception ex)
         {
-            Log.Warn($"CUDA encoder unavailable, using CPU: {ex.Message.Split('\n')[0]}");
+            Log.Warn($"GPU (DirectML) encoder unavailable, using CPU: {ex.Message.Split('\n')[0]}");
             return null;
         }
     }

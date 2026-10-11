@@ -124,6 +124,7 @@ foreach (var test in tests)
 AssertDisabledRulePersists();
 AssertWhisperVocabularyPromptBuilder();
 AssertSpeculativeCachePolicy();
+AssertGpuModelDetection();
 AssertTranscriptSplicer();
 AssertTaskCaptureSettingsMigration();
 AssertCancelChordSettingsMigration();
@@ -335,6 +336,25 @@ static void AssertWhisperVocabularyPromptBuilder()
 
     var empty = WhisperVocabularyPromptBuilder.Build(new[] { Rule("disabled", "DisabledTerm", enabled: false) });
     AssertEqual(false, empty.HasPrompt, "whisper prompt: disabled rules omitted");
+}
+
+static void AssertGpuModelDetection()
+{
+    var root = Path.Combine(Path.GetTempPath(), "handy-gpu-detect-" + Guid.NewGuid().ToString("N"));
+    try
+    {
+        var gpu = Directory.CreateDirectory(Path.Combine(root, "gpu")).FullName;
+        var cpu = Directory.CreateDirectory(Path.Combine(root, "cpu")).FullName;
+        foreach (var f in new[] { "encoder-model.onnx", "decoder_joint-model.int8.onnx" })
+            File.WriteAllText(Path.Combine(gpu, f), "");
+        foreach (var f in new[] { "encoder-model.int8.onnx", "decoder_joint-model.int8.onnx" })
+            File.WriteAllText(Path.Combine(cpu, f), "");
+        AssertEqual(true, ParakeetTranscriptionService.HasFp32Models(gpu), "gpu model: fp32 encoder + int8 decoder is complete");
+        AssertEqual(false, ParakeetTranscriptionService.HasInt8Models(gpu), "gpu model: is not mistaken for the CPU build");
+        AssertEqual(false, ParakeetTranscriptionService.HasFp32Models(cpu), "cpu model: is not mistaken for the GPU build");
+        AssertEqual(true, ParakeetTranscriptionService.HasInt8Models(cpu), "cpu model: int8 pair is complete");
+    }
+    finally { try { Directory.Delete(root, true); } catch { } }
 }
 
 static void AssertSpeculativeCachePolicy()
