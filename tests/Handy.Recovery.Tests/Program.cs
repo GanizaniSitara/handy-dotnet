@@ -4,6 +4,13 @@ using System.Text.Json;
 using System.Diagnostics;
 using Handy.Services;
 
+if (args.Length >= 4 && args[0] == "--bench-provider")
+{
+    await PerformanceChecks.BenchProvider(args[1], args[2], args[3], args.Length > 4 ? args[4] : null,
+        args.Length > 5 ? int.Parse(args[5]) : 4, args.Length > 6 ? int.Parse(args[6]) : 0);
+    return;
+}
+
 if (args.Length == 3 && args[0] == "--bench-encoder")
 {
     await PerformanceChecks.BenchEncoder(args[1], args[2]);

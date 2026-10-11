@@ -188,6 +188,30 @@ static class PerformanceChecks
         }
     }
 
+    public static async Task BenchProvider(string modelDir, string wav, string provider, string? cudaLibraryDir, int passes = 4, int cudaDeviceId = 0)
+    {
+        EnableBenchmarkLog();
+        var loadTimer = Stopwatch.StartNew();
+        using var asr = new ParakeetTranscriptionService(modelDir, encoderThreads: 8, prioritizeInference: true,
+            executionProvider: provider, cudaLibraryDir: cudaLibraryDir, cudaDeviceId: cudaDeviceId);
+        Check(asr.IsReady, "provider benchmark model ready");
+        Console.WriteLine(JsonSerializer.Serialize(new { requested = provider, actual = asr.ExecutionProvider, loadMs = loadTimer.ElapsedMilliseconds }));
+        var samples = ReadWav(wav);
+        foreach (int seconds in new[] { 3, 7, 11, 20 })
+        {
+            var clip = seconds * 16000 <= samples.Length
+                ? samples.Take(seconds * 16000).ToArray()
+                : samples.Concat(samples).Take(seconds * 16000).ToArray();
+            for (int pass = 0; pass < passes; pass++)
+            {
+                var timer = Stopwatch.StartNew();
+                var text = await asr.TranscribeAsync(clip);
+                Console.WriteLine(JsonSerializer.Serialize(new { seconds, pass, provider = asr.ExecutionProvider,
+                    wallMs = Math.Round(timer.Elapsed.TotalMilliseconds), text }));
+            }
+        }
+    }
+
     public static async Task BenchPriority(string modelDir, string wav, int encoderThreads)
     {
         EnableBenchmarkLog();

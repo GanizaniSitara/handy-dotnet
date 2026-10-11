@@ -168,6 +168,14 @@ public sealed class AppSettings
     public int ParakeetEncoderThreads { get; set; } = 4;
     public bool ParakeetPrioritizeInference { get; set; } = false;
 
+    /// <summary>Auto | CPU | CUDA. Auto runs the encoder on CUDA when an fp32
+    /// model directory is installed and the provider loads, else CPU int8.
+    /// CUDA needs cudart 12 / cuBLAS 12 / cuDNN 9 reachable: either on PATH or
+    /// in <see cref="ParakeetCudaLibraryDir"/>.</summary>
+    public string ParakeetExecutionProvider { get; set; } = "Auto";
+    public int ParakeetCudaDeviceId { get; set; } = 0;
+    public string ParakeetCudaLibraryDir { get; set; } = "";
+
     /// <summary>tiny.en | tiny | base | base.en | small | small.en. Used only when TranscriptionBackend = Whisper.</summary>
     public string WhisperModel { get; set; } = "base";
 

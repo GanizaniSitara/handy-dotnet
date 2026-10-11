@@ -151,7 +151,7 @@ public partial class App : Application
             file:    Log.ParseVerbosity(_settings.LogFileVerbosity,    LogVerbosity.Debug),
             display: Log.ParseVerbosity(_settings.LogDisplayVerbosity, LogVerbosity.Normal));
 
-        _parakeetModelDir = ResolveModelDir(_dataDir, _settings.ParakeetVariant);
+        _parakeetModelDir = ResolveModelDir(_dataDir, _settings.ParakeetVariant, _settings.ParakeetExecutionProvider);
 
         // --transcribe-file <path>: skip the UI, transcribe the file, write
         // the result to %APPDATA%\Handy\last-transcript.txt, exit.
@@ -297,6 +297,9 @@ public partial class App : Application
             ParakeetVariant = _settings.ParakeetVariant,
             ParakeetEncoderThreads = _settings.ParakeetEncoderThreads,
             ParakeetPrioritizeInference = _settings.ParakeetPrioritizeInference,
+            ParakeetExecutionProvider = _settings.ParakeetExecutionProvider,
+            ParakeetCudaDeviceId = _settings.ParakeetCudaDeviceId,
+            ParakeetCudaLibraryDir = _settings.ParakeetCudaLibraryDir,
         };
         var modelDir = _parakeetModelDir;
         _modelLoading = true;
@@ -1404,7 +1407,7 @@ public partial class App : Application
         _settings.WhisperModel = whisperModel;
         _settings.ParakeetVariant = variant;
 
-        var newParakeetDir = ResolveModelDir(_dataDir, variant);
+        var newParakeetDir = ResolveModelDir(_dataDir, variant, _settings.ParakeetExecutionProvider);
 
         if (string.Equals(backend, _activeBackend, StringComparison.OrdinalIgnoreCase) &&
             string.Equals(whisperModel, _activeWhisperModel, StringComparison.OrdinalIgnoreCase) &&
@@ -1453,7 +1456,7 @@ public partial class App : Application
             return new ModelRuntimeStatus("Whisper", $"Whisper {modelName}", path, File.Exists(path));
         }
 
-        var parakeetModelDir = ResolveModelDir(_dataDir, parakeetVariant);
+        var parakeetModelDir = ResolveModelDir(_dataDir, parakeetVariant, _settings.ParakeetExecutionProvider);
         return new ModelRuntimeStatus(
             "Parakeet",
             DescribeParakeetModelName(parakeetModelDir),
@@ -1549,7 +1552,7 @@ public partial class App : Application
             }
 
             var settings = AppSettings.Load(dataDir);
-            var parakeetModelDir = ResolveModelDir(dataDir, settings.ParakeetVariant);
+            var parakeetModelDir = ResolveModelDir(dataDir, settings.ParakeetVariant, settings.ParakeetExecutionProvider);
             var backend = NormalizeBackend(settings.TranscriptionBackend);
             using var asr = CreateTranscriptionService(settings, dataDir, parakeetModelDir);
             if (!asr.IsReady)
@@ -1662,7 +1665,7 @@ public partial class App : Application
             }
 
             var settings = AppSettings.Load(dataDir);
-            var parakeetModelDir = ResolveModelDir(dataDir, settings.ParakeetVariant);
+            var parakeetModelDir = ResolveModelDir(dataDir, settings.ParakeetVariant, settings.ParakeetExecutionProvider);
             var backend = NormalizeBackend(settings.TranscriptionBackend);
             var whisperModel = WhisperTranscriptionService.NormalizeModelName(settings.WhisperModel);
             var loadSw = Stopwatch.StartNew();
@@ -1715,7 +1718,15 @@ public partial class App : Application
         }
     }
 
-    private static string ResolveModelDir(string dataDir, string preferredVariant)
+    internal static string NormalizeExecutionProvider(string? p) =>
+        (p ?? string.Empty).Trim().ToUpperInvariant() switch
+        {
+            "CPU" => "CPU",
+            "CUDA" => "CUDA",
+            _ => "Auto",
+        };
+
+    private static string ResolveModelDir(string dataDir, string preferredVariant, string? executionProvider = "CPU")
     {
         var env = Environment.GetEnvironmentVariable("HANDY_MODEL_DIR");
         if (!string.IsNullOrWhiteSpace(env) && HasParakeetAssets(env))
@@ -1733,6 +1744,11 @@ public partial class App : Application
             "V3" => new[] { "parakeet-tdt-0.6b-v3-int8", "parakeet-tdt-0.6b-v2-int8" },
             _    => new[] { "parakeet-tdt-0.6b-v3-int8", "parakeet-tdt-0.6b-v2-int8" },
         };
+        // A GPU wants the fp32 export (same directory name without "-int8"),
+        // so those come first when the provider allows it; int8 stays as the
+        // fallback so a machine without the fp32 download still loads.
+        if (NormalizeExecutionProvider(executionProvider) != "CPU")
+            names = names.Select(n => n.Replace("-int8", string.Empty)).Concat(names).ToArray();
 
         foreach (var name in names)
         {
@@ -1796,8 +1812,7 @@ public partial class App : Application
     private static bool HasParakeetAssets(string dir) =>
         Directory.Exists(dir) &&
         File.Exists(Path.Combine(dir, "nemo128.onnx")) &&
-        File.Exists(Path.Combine(dir, "encoder-model.int8.onnx")) &&
-        File.Exists(Path.Combine(dir, "decoder_joint-model.int8.onnx")) &&
+        (ParakeetTranscriptionService.HasInt8Models(dir) || ParakeetTranscriptionService.HasFp32Models(dir)) &&
         File.Exists(Path.Combine(dir, "vocab.txt"));
 
     private static ITranscriptionService CreateTranscriptionService(AppSettings settings, string dataDir, string parakeetModelDir)
@@ -1811,8 +1826,29 @@ public partial class App : Application
             return new WhisperTranscriptionService(ResolveWhisperModelsDir(dataDir), settings.WhisperModel);
         }
 
+        var threads = Math.Clamp(settings.ParakeetEncoderThreads, 1, Environment.ProcessorCount);
+        var provider = NormalizeExecutionProvider(settings.ParakeetExecutionProvider);
+        // Auto means: try the GPU when an fp32 directory was selected for it.
+        var tryCuda = provider == "CUDA" ||
+                      (provider == "Auto" && ParakeetTranscriptionService.HasFp32Models(parakeetModelDir)
+                                          && !ParakeetTranscriptionService.HasInt8Models(parakeetModelDir));
+        if (tryCuda)
+        {
+            var gpu = new ParakeetTranscriptionService(parakeetModelDir,
+                encoderThreads: threads, prioritizeInference: settings.ParakeetPrioritizeInference,
+                executionProvider: "CUDA", cudaDeviceId: settings.ParakeetCudaDeviceId,
+                cudaLibraryDir: settings.ParakeetCudaLibraryDir);
+            if (gpu.IsReady && gpu.ExecutionProvider == "CUDA") return gpu;
+            // The fp32 encoder on a CPU is several times slower than int8, so a
+            // failed CUDA load goes back to whatever int8 directory exists
+            // rather than limping along with the fp32 one.
+            gpu.Dispose();
+            var cpuDir = ResolveModelDir(dataDir, settings.ParakeetVariant, "CPU");
+            Log.Warn($"CUDA unavailable; loading CPU model from {cpuDir}");
+            parakeetModelDir = cpuDir;
+        }
         return new ParakeetTranscriptionService(parakeetModelDir,
-            encoderThreads: Math.Clamp(settings.ParakeetEncoderThreads, 1, Environment.ProcessorCount),
+            encoderThreads: threads,
             prioritizeInference: settings.ParakeetPrioritizeInference);
     }
 
