@@ -203,6 +203,16 @@ public partial class App : Application
                       $"pid={previous.Pid} lastPhase={previous.Phase} phaseAgeMs={previous.PhaseAgeMs} heartbeatAge={heartbeatAge})");
         }
         _session.Start();
+        if (_settings.RunAboveNormalPriority)
+        {
+            try
+            {
+                using var self = Process.GetCurrentProcess();
+                self.PriorityClass = ProcessPriorityClass.AboveNormal;
+                Log.Info("Session: process priority AboveNormal");
+            }
+            catch (Exception ex) { Log.Warn($"Could not raise process priority: {ex.Message}"); }
+        }
 
         _activeBackend = NormalizeBackend(_settings.TranscriptionBackend);
         _activeWhisperModel = WhisperTranscriptionService.NormalizeModelName(_settings.WhisperModel);

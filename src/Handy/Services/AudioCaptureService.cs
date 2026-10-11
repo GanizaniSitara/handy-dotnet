@@ -312,6 +312,10 @@ public sealed class AudioCaptureService : IDisposable
 
     private void OnDataAvailable(object? sender, WaveInEventArgs e)
     {
+        // NAudio owns the capture thread; raise it on its first callback so a
+        // saturated CPU delays other work before it delays the microphone.
+        if (System.Threading.Thread.CurrentThread.Priority != System.Threading.ThreadPriority.Highest)
+            System.Threading.Thread.CurrentThread.Priority = System.Threading.ThreadPriority.Highest;
         bool recordingNow;
         lock (_lock)
         {
