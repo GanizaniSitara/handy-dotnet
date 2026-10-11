@@ -29,29 +29,15 @@ public interface IWindowBridge
 
 public sealed class DefaultWindowBridge : IWindowBridge
 {
-    private ConsolePasteTarget? _consolePasteTarget;
-    private long _probeGeneration;
+    // No per-target route overrides. A classic console hosting a TUI (agy, a
+    // Go Bubble Tea app) runs in raw VT input mode, so conhost never turns
+    // Ctrl+V into a paste; the chord reaches the app as a key and nothing
+    // lands. Direct typing is what delivers there, exactly as in every other
+    // console, and the Alt+Shift+V recovery proved it. Keep the hooks so a
+    // test bridge can still drive the route logic.
+    public Task PreparePasteTargetAsync(IntPtr hwnd) => Task.CompletedTask;
 
-    public Task PreparePasteTargetAsync(IntPtr hwnd)
-    {
-        var generation = Interlocked.Increment(ref _probeGeneration);
-        Volatile.Write(ref _consolePasteTarget, null);
-        return Task.Run(() =>
-        {
-            var timer = Stopwatch.StartNew();
-            try
-            {
-                var target = ConsolePasteTarget.Probe(hwnd);
-                if (Interlocked.Read(ref _probeGeneration) == generation)
-                    Volatile.Write(ref _consolePasteTarget, target);
-                Log.Info($"Paste: target-probe hwnd=0x{hwnd.ToInt64():X} client={(target is null ? "unknown" : "agy")} elapsedMs={timer.ElapsedMilliseconds}");
-            }
-            catch (Exception ex) { Log.Info($"Paste: target-probe unavailable: {ex.Message}"); }
-        });
-    }
-
-    public string? PreferredClipboardMethod(IntPtr hwnd)
-        => Volatile.Read(ref _consolePasteTarget)?.IsCurrent(hwnd) == true ? "CtrlV" : null;
+    public string? PreferredClipboardMethod(IntPtr hwnd) => null;
 
     private static readonly string[] CitrixProcessNames =
     {
