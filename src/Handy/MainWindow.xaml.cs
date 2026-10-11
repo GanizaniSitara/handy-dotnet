@@ -22,6 +22,8 @@ public partial class MainWindow : Window
 
     private AppSettings? _settings;
     private bool _loading;
+    private readonly DisplayLogBuffer _displayLog = new();
+    private readonly System.Windows.Threading.DispatcherTimer _logTimer;
     private ObservableCollection<DomainCorrection> _domainCorrections = new();
 
     public MainWindow()
@@ -33,6 +35,16 @@ public partial class MainWindow : Window
         if (!string.IsNullOrEmpty(versionLabel))
             Title = $"Handy.NET — Settings (v{versionLabel})";
         Log.Sink = AppendLine;
+        _logTimer = new System.Windows.Threading.DispatcherTimer(System.Windows.Threading.DispatcherPriority.Background)
+        {
+            Interval = TimeSpan.FromMilliseconds(250),
+        };
+        _logTimer.Tick += (_, _) => RenderLog();
+        IsVisibleChanged += (_, _) =>
+        {
+            if (IsVisible) { RenderLog(); _logTimer.Start(); }
+            else _logTimer.Stop();
+        };
 
         Loaded += (_, _) => LoadFromSettings();
 
@@ -90,10 +102,10 @@ public partial class MainWindow : Window
         var pending = app.DescribeModelSelection(selectedBackend, selectedWhisperModel, selectedParakeetVariant);
 
         ActiveModelSummaryText.Text = $"{active.ModelName} ({active.Backend})";
-        ActiveModelStatusText.Text = active.IsReady
+        ActiveModelStatusText.Text = app.IsModelLoading ? "Loading - dictation will be available shortly" : active.IsReady
             ? "Ready - currently used for transcription"
-            : "Missing - transcription will fail until this model is installed";
-        ActiveModelStatusText.Foreground = active.IsReady ? Brushes.ForestGreen : Brushes.Firebrick;
+            : "Unavailable - check the log for missing models or loading errors";
+        ActiveModelStatusText.Foreground = app.IsModelLoading ? Brushes.DarkOrange : active.IsReady ? Brushes.ForestGreen : Brushes.Firebrick;
         ActiveModelPathText.Text = active.Path;
 
         var selectionMatchesActive =
@@ -444,13 +456,14 @@ public partial class MainWindow : Window
     };
 
     private void AppendLine(string line)
+        => _displayLog.Append(line);
+
+    private void RenderLog()
     {
-        if (!Dispatcher.CheckAccess())
-        {
-            Dispatcher.BeginInvoke(new Action(() => AppendLine(line)));
-            return;
-        }
-        LogBox.AppendText(line + Environment.NewLine);
+        if (!IsVisible || PanelLog.Visibility != Visibility.Visible) return;
+        var text = _displayLog.TakeChangedText();
+        if (text is null) return;
+        LogBox.Text = text;
         LogBox.ScrollToEnd();
     }
 
@@ -469,6 +482,7 @@ public partial class MainWindow : Window
         PanelAdvanced.Visibility = NavAdvanced.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
         PanelModels.Visibility   = NavModels.IsChecked   == true ? Visibility.Visible : Visibility.Collapsed;
         PanelLog.Visibility      = NavLog.IsChecked      == true ? Visibility.Visible : Visibility.Collapsed;
+        RenderLog();
     }
 
     private async void OnDownloadModel(object sender, RoutedEventArgs e)

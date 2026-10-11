@@ -40,6 +40,9 @@ internal static class Log
 
     public static Action<string>? Sink;
 
+    internal static bool IsEnabled(LogVerbosity verbosity) =>
+        (int)verbosity <= (int)_fileVerbosity || (int)verbosity <= (int)_displayVerbosity;
+
     public static void SetVerbosity(LogVerbosity file, LogVerbosity display)
     {
         _fileVerbosity = file;
@@ -73,7 +76,7 @@ internal static class Log
             return LogVerbosity.Debug;
         if (msg.StartsWith("VAD:")        || msg.StartsWith("Preproc:")   || msg.StartsWith("Encoder:") ||
             msg.StartsWith("Decode:")     || msg.StartsWith("Flow:")      || msg.StartsWith("Spec:")   ||
-            msg.StartsWith("Spec prefix") || msg.StartsWith("Diag:")      ||
+            msg.StartsWith("Spec prefix") || msg.StartsWith("Diag:") || msg.StartsWith("Perf:") ||
             msg.StartsWith("Audio capture") || msg.StartsWith("Primary instance"))
             return LogVerbosity.Verbose;
         return LogVerbosity.Normal;

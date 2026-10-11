@@ -70,7 +70,7 @@ static class CaptureAdmissionChecks
         void Start()
         {
             var method = typeof(App).GetMethod("StartRecording", BindingFlags.Instance | BindingFlags.NonPublic)!;
-            method.Invoke(app, new[] { Enum.ToObject(method.GetParameters()[0].ParameterType, 0) });
+            method.Invoke(app, new object[] { Enum.ToObject(method.GetParameters()[0].ParameterType, 0), IntPtr.Zero });
         }
         void Expect(string message)
         {

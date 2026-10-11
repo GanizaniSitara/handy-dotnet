@@ -16,8 +16,10 @@ public sealed record ForegroundWindowSnapshot(
     string WindowTitle)
 {
     public static ForegroundWindowSnapshot Capture()
+        => Capture(NativeMethods.GetForegroundWindow());
+
+    public static ForegroundWindowSnapshot Capture(IntPtr hwnd)
     {
-        var hwnd = NativeMethods.GetForegroundWindow();
         var title = new StringBuilder(512);
         var className = new StringBuilder(256);
         uint pid = 0;

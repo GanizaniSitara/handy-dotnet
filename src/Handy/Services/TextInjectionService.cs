@@ -49,6 +49,9 @@ public sealed class TextInjectionService
         _bridge = bridge ?? throw new ArgumentNullException(nameof(bridge));
     }
 
+    // Probe while the microphone is already recording. Paste never waits for it.
+    public void PrepareTarget(IntPtr hwnd) => _ = _bridge.PreparePasteTargetAsync(hwnd);
+
     /// <param name="intendedHwnd">
     /// Window that had focus when the user started dictating, or 0 if unknown.
     /// Anything else on screen at paste time is not where the text belongs.
@@ -91,14 +94,17 @@ public sealed class TextInjectionService
             return new PasteResult(PasteOutcome.Delivered);
         }
 
-        // Windows Terminal hands each injected key to the shell app as its own
-        // input event, so a TUI that redraws per key (agy, claude) makes a Direct
-        // transcript trickle in for seconds. One Ctrl+V arrives as a single paste.
-        if (string.Equals(method, "Direct", StringComparison.OrdinalIgnoreCase)
-            && _bridge.IsWindowsTerminalForeground())
+        if (string.Equals(method, "Direct", StringComparison.OrdinalIgnoreCase))
         {
-            Log.Info("Paste: Windows Terminal foreground; using CtrlV instead of Direct.");
-            method = "CtrlV";
+            // The prepared route belongs to this dictation's captured target.
+            // Retype (unknown target) retains its existing recovery method.
+            var preferred = intendedHwnd != IntPtr.Zero && actualHwnd == intendedHwnd
+                ? _bridge.PreferredClipboardMethod(actualHwnd) : null;
+            if (preferred is not null || _bridge.IsWindowsTerminalForeground())
+            {
+                method = preferred ?? "CtrlV";
+                Log.Info($"Paste: target clipboard route={method}; configured=Direct.");
+            }
         }
 
         if (string.Equals(method, "Direct", StringComparison.OrdinalIgnoreCase))
@@ -146,6 +152,12 @@ public sealed class TextInjectionService
 
         if (settings.PasteDelayMs > 0)
             _bridge.Sleep(settings.PasteDelayMs);
+
+        // Clipboard access/settling can yield long enough for focus to move.
+        // Re-check immediately before the chord, leaving text available to recover.
+        if (_bridge.GetForegroundWindow() != actualHwnd && policy != PasteFocusPolicy.PasteAnyway
+            && !(policy == PasteFocusPolicy.RestoreAndPaste && TryRestoreFocus(actualHwnd)))
+            return new PasteResult(PasteOutcome.WrongWindow, _bridge.DescribeForegroundWindow());
 
         // The chord methods are a fixed, small number of events. Capture what we
         // asked for so a refusal is detectable rather than assumed successful.
@@ -277,7 +289,7 @@ public sealed class TextInjectionService
 
         for (var i = 0; i < text.Length; i++)
         {
-            if (expectedHwnd != IntPtr.Zero && i > 0 && i % FocusCheckEveryChars == 0)
+            if (expectedHwnd != IntPtr.Zero && i % FocusCheckEveryChars == 0)
             {
                 var current = _bridge.GetForegroundWindow();
                 if (current != expectedHwnd)

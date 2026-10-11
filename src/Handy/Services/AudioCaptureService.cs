@@ -37,6 +37,9 @@ public sealed class AudioCaptureService : IDisposable
     private WaveInEvent? _wave;
 
     private bool _recording;
+    private long _recordingStartedTicks;
+    private int _recordingPreRollBytes;
+    private double _recordingMaxCallbackGapMs;
     private MemoryStream _recBuffer = new();
 
     /// <summary>
@@ -104,6 +107,9 @@ public sealed class AudioCaptureService : IDisposable
             var recStart = Math.Max(0, _writePos - preRollBytes);
             var preRoll = ExtractUnlocked(recStart, _writePos);
             if (preRoll.Length > 0) _recBuffer.Write(preRoll, 0, preRoll.Length);
+            _recordingPreRollBytes = preRoll.Length;
+            _recordingStartedTicks = Stopwatch.GetTimestamp();
+            _recordingMaxCallbackGapMs = 0;
             _recording = true;
         }
     }
@@ -124,7 +130,7 @@ public sealed class AudioCaptureService : IDisposable
     /// capture continues. Returns empty if no recording is in progress.
     /// Used by the speculative-recognition path to drive background ASR.
     /// </summary>
-    public float[] SnapshotCurrentRecording()
+    public float[] SnapshotCurrentRecording(int startSample = 0)
     {
         byte[] pcm;
         int pcmLen;
@@ -140,8 +146,9 @@ public sealed class AudioCaptureService : IDisposable
             pcmLen = (int)_recBuffer.Length;
         }
 
-        var samples = new float[pcmLen / 2];
-        for (int i = 0, j = 0; i < pcmLen - 1; i += 2, j++)
+        startSample = Math.Clamp(startSample, 0, pcmLen / 2);
+        var samples = new float[pcmLen / 2 - startSample];
+        for (int i = startSample * 2, j = 0; i < pcmLen - 1; i += 2, j++)
         {
             short s = (short)(pcm[i] | (pcm[i + 1] << 8));
             samples[j] = s / 32768f;
@@ -158,13 +165,21 @@ public sealed class AudioCaptureService : IDisposable
         if (postRollMs > 0) await Task.Delay(postRollMs).ConfigureAwait(false);
 
         byte[] pcm;
+        double elapsedMs, maxGapMs;
+        int preRollBytes;
         lock (_lock)
         {
             if (!_recording) return Array.Empty<float>();
             _recording = false;
+            elapsedMs = Stopwatch.GetElapsedTime(_recordingStartedTicks).TotalMilliseconds;
+            maxGapMs = _recordingMaxCallbackGapMs;
+            preRollBytes = _recordingPreRollBytes;
             pcm = _recBuffer.ToArray();
             ResetRecBuffer();
         }
+        var liveAudioMs = (pcm.Length - preRollBytes) * 1000.0 / BytesPerSec;
+        Log.Info($"Audio: elapsedMs={elapsedMs:F0} liveAudioMs={liveAudioMs:F0} " +
+                 $"shortfallMs={elapsedMs - liveAudioMs:F0} maxCallbackGapMs={maxGapMs:F0}");
 
         // A recording that captured nothing means the device accepted
         // StartRecording but never delivered a callback — a dead or wedged
@@ -211,6 +226,9 @@ public sealed class AudioCaptureService : IDisposable
             DeviceNumber = device,
             WaveFormat = new WaveFormat(SampleRate, 16, 1),
             BufferMilliseconds = 50,
+            // Keep 50 ms delivery granularity, but tolerate a scheduler stall
+            // of up to one second before all native capture buffers fill.
+            NumberOfBuffers = 20,
         };
         w.DataAvailable += OnDataAvailable;
         w.RecordingStopped += OnRecordingStopped;
@@ -312,7 +330,11 @@ public sealed class AudioCaptureService : IDisposable
                 Buffer.BlockCopy(e.Buffer, first, _ring, 0,          count - first);
             }
             _writePos += count;
-            _lastDataTicks = Stopwatch.GetTimestamp();
+            var now = Stopwatch.GetTimestamp();
+            if (_recording && _lastDataTicks > 0)
+                _recordingMaxCallbackGapMs = Math.Max(_recordingMaxCallbackGapMs,
+                    Stopwatch.GetElapsedTime(_lastDataTicks, now).TotalMilliseconds);
+            _lastDataTicks = now;
 
             if (_recording) _recBuffer.Write(e.Buffer, 0, count);
             recordingNow = _recording;

@@ -2,6 +2,7 @@ using System;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Windows;
 using Handy.PInvoke;
 
@@ -15,6 +16,8 @@ public interface IWindowBridge
     string DescribeForegroundWindow();
     bool IsCitrixForeground();
     bool IsWindowsTerminalForeground();
+    Task PreparePasteTargetAsync(IntPtr hwnd) => Task.CompletedTask;
+    string? PreferredClipboardMethod(IntPtr hwnd) => null;
     bool IsElevationMismatch(IntPtr hwnd, out string targetName, out int lastErr);
     uint SendUnicode(char ch);
     uint SendKey(ushort vk, bool down);
@@ -26,6 +29,30 @@ public interface IWindowBridge
 
 public sealed class DefaultWindowBridge : IWindowBridge
 {
+    private ConsolePasteTarget? _consolePasteTarget;
+    private long _probeGeneration;
+
+    public Task PreparePasteTargetAsync(IntPtr hwnd)
+    {
+        var generation = Interlocked.Increment(ref _probeGeneration);
+        Volatile.Write(ref _consolePasteTarget, null);
+        return Task.Run(() =>
+        {
+            var timer = Stopwatch.StartNew();
+            try
+            {
+                var target = ConsolePasteTarget.Probe(hwnd);
+                if (Interlocked.Read(ref _probeGeneration) == generation)
+                    Volatile.Write(ref _consolePasteTarget, target);
+                Log.Info($"Paste: target-probe hwnd=0x{hwnd.ToInt64():X} client={(target is null ? "unknown" : "agy")} elapsedMs={timer.ElapsedMilliseconds}");
+            }
+            catch (Exception ex) { Log.Info($"Paste: target-probe unavailable: {ex.Message}"); }
+        });
+    }
+
+    public string? PreferredClipboardMethod(IntPtr hwnd)
+        => Volatile.Read(ref _consolePasteTarget)?.IsCurrent(hwnd) == true ? "CtrlV" : null;
+
     private static readonly string[] CitrixProcessNames =
     {
         "cdviewer", "wfica32", "receiver", "selfservice",

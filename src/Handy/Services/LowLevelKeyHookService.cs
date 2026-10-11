@@ -4,6 +4,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
 using System.Windows;
+using System.Windows.Threading;
 using Handy.PInvoke;
 
 namespace Handy.Services;
@@ -12,12 +13,12 @@ namespace Handy.Services;
 /// Global WH_KEYBOARD_LL hook. Supports both toggle and push-to-talk modes by
 /// reporting raw press/release events for the configured trigger and cancel chords.
 ///
-/// Hooks require a message-pumping thread — we install from the WPF dispatcher.
+/// Hooks run on a dedicated message thread so UI work cannot delay callbacks.
 /// </summary>
 public sealed class LowLevelKeyHookService : IDisposable
 {
-    public event Action<bool>? OnTrigger;       // true = pressed, false = released
-    public event Action<bool>? OnTaskCapture;
+    public event Action<bool, IntPtr>? OnTrigger;       // true = pressed, false = released
+    public event Action<bool, IntPtr>? OnTaskCapture;
     public event Action?       OnCancel;
     public event Action?       OnCopyLast;
     public event Action?       OnRetypeLast;
@@ -35,6 +36,8 @@ public sealed class LowLevelKeyHookService : IDisposable
 
     private readonly NativeMethods.HookProc _proc;
     private IntPtr _hook;
+    private Thread? _hookThread;
+    private Dispatcher? _hookDispatcher;
 
     private static readonly uint[] ModifierVks =
     {
@@ -97,7 +100,21 @@ public sealed class LowLevelKeyHookService : IDisposable
 
     public void Install()
     {
-        if (_hook != IntPtr.Zero) return;
+        if (_hookThread is not null) return;
+        using var ready = new ManualResetEventSlim();
+        _hookThread = new Thread(() =>
+        {
+            _hookDispatcher = Dispatcher.CurrentDispatcher;
+            try { InstallOnHookThread(); }
+            finally { ready.Set(); }
+            Dispatcher.Run();
+        }) { IsBackground = true, Name = "Handy keyboard hook" };
+        _hookThread.Start();
+        ready.Wait();
+    }
+
+    private void InstallOnHookThread()
+    {
 
         using var proc = Process.GetCurrentProcess();
         var module = proc.MainModule;
@@ -237,8 +254,9 @@ public sealed class LowLevelKeyHookService : IDisposable
 
         // Diagnostic: log every event matching the configured trigger VK, regardless of mod state.
         // Lets us confirm the hook is firing when the terminal has focus and whether mods/flags differ.
-        if ((!_trigger.IsEmpty && vk == _trigger.Vk) ||
-            (!_taskCapture.IsEmpty && vk == _taskCapture.Vk))
+        if (Log.IsEnabled(LogVerbosity.Debug) &&
+            ((!_trigger.IsEmpty && vk == _trigger.Vk) ||
+             (!_taskCapture.IsEmpty && vk == _taskCapture.Vk)))
         {
             try
             {
@@ -269,7 +287,7 @@ public sealed class LowLevelKeyHookService : IDisposable
         // Check cancel first (cancel is a simple single-key match; modifier-agnostic is fine).
         if (!_cancel.IsEmpty && vk == _cancel.Vk && isDown)
         {
-            try { OnCancel?.Invoke(); } catch (Exception ex) { Log.Error($"OnCancel: {ex}"); }
+            DispatchCancel();
             // Don't swallow Escape — users may want it to still cancel dialogs etc.
         }
 
@@ -279,7 +297,7 @@ public sealed class LowLevelKeyHookService : IDisposable
             var modsPressed = ObservedMods();
             if ((_cancelChord.Required & modsPressed) == _cancelChord.Required)
             {
-                try { OnCancel?.Invoke(); } catch (Exception ex) { Log.Error($"OnCancel: {ex}"); }
+                DispatchCancel();
                 return (IntPtr)1;
             }
         }
@@ -371,30 +389,43 @@ public sealed class LowLevelKeyHookService : IDisposable
 
     private void DispatchTrigger(bool pressed)
     {
+        var foreground = pressed ? NativeMethods.GetForegroundWindow() : IntPtr.Zero;
         // Marshal to the UI thread so handlers can touch WPF state safely.
         var app = Application.Current;
         if (app is null)
         {
-            try { OnTrigger?.Invoke(pressed); } catch (Exception ex) { Log.Error($"OnTrigger: {ex}"); }
+            try { OnTrigger?.Invoke(pressed, foreground); } catch (Exception ex) { Log.Error($"OnTrigger: {ex}"); }
             return;
         }
         app.Dispatcher.BeginInvoke(new Action(() =>
         {
-            try { OnTrigger?.Invoke(pressed); } catch (Exception ex) { Log.Error($"OnTrigger: {ex}"); }
+            try { OnTrigger?.Invoke(pressed, foreground); } catch (Exception ex) { Log.Error($"OnTrigger: {ex}"); }
         }));
+    }
+
+    private void DispatchCancel()
+    {
+        var app = Application.Current;
+        void Cancel()
+        {
+            try { OnCancel?.Invoke(); } catch (Exception ex) { Log.Error($"OnCancel: {ex}"); }
+        }
+        if (app is null) Cancel();
+        else app.Dispatcher.BeginInvoke(new Action(Cancel));
     }
 
     private void DispatchTaskCapture(bool pressed)
     {
+        var foreground = pressed ? NativeMethods.GetForegroundWindow() : IntPtr.Zero;
         var app = Application.Current;
         if (app is null)
         {
-            try { OnTaskCapture?.Invoke(pressed); } catch (Exception ex) { Log.Error($"OnTaskCapture: {ex}"); }
+            try { OnTaskCapture?.Invoke(pressed, foreground); } catch (Exception ex) { Log.Error($"OnTaskCapture: {ex}"); }
             return;
         }
         app.Dispatcher.BeginInvoke(new Action(() =>
         {
-            try { OnTaskCapture?.Invoke(pressed); } catch (Exception ex) { Log.Error($"OnTaskCapture: {ex}"); }
+            try { OnTaskCapture?.Invoke(pressed, foreground); } catch (Exception ex) { Log.Error($"OnTaskCapture: {ex}"); }
         }));
     }
 
@@ -485,10 +516,21 @@ public sealed class LowLevelKeyHookService : IDisposable
         _stuckKeyTimer?.Dispose();
         _stuckKeyTimer = null;
 
-        if (_hook != IntPtr.Zero)
+        var dispatcher = _hookDispatcher;
+        if (dispatcher is not null)
         {
-            NativeMethods.UnhookWindowsHookEx(_hook);
-            _hook = IntPtr.Zero;
+            dispatcher.BeginInvoke(new Action(() =>
+            {
+                if (_hook != IntPtr.Zero)
+                {
+                    NativeMethods.UnhookWindowsHookEx(_hook);
+                    _hook = IntPtr.Zero;
+                }
+                dispatcher.BeginInvokeShutdown(DispatcherPriority.Send);
+            }));
+            _hookThread?.Join(1000);
+            _hookDispatcher = null;
+            _hookThread = null;
         }
     }
 }

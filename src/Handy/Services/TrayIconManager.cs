@@ -65,7 +65,7 @@ public sealed class TrayIconManager : IDisposable
         _icon.RightClick += (_, _) => _icon.ShowContextMenu(_menu);
     }
 
-    public enum State { Idle, Recording, Transcribing }
+    public enum State { Idle, Recording, Transcribing, Loading }
 
     public void SetState(State state)
     {
@@ -78,6 +78,12 @@ public sealed class TrayIconManager : IDisposable
         bool cancelEnabled;
         switch (state)
         {
+            case State.Loading:
+                color = WMedia.Color.FromRgb(0xE0, 0xA0, 0x30);
+                status = "Loading model…";
+                tooltip = "Handy.NET — loading model";
+                cancelEnabled = false;
+                break;
             case State.Recording:
                 color = RecordingColor;
                 status = "Recording…";

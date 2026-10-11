@@ -340,48 +340,32 @@ static void AssertWhisperVocabularyPromptBuilder()
 static void AssertSpeculativeCachePolicy()
 {
     var s = new AppSettings { BackgroundRecognitionEnabled = true };
-
-    // Tail is silence (VAD trimmed everything after the snapshot) -> use prefix only.
+    SileroVadService.Analysis Tail(int count, SileroVadService.SpeechStatus status)
+        => new(new float[count], status, 0);
     AssertEqual(SpeculativeCachePolicy.Decision.UsePrefixOnly,
-        SpeculativeCachePolicy.Decide(finalRawSampleCount: 96_000, snapshotRawSampleCount: 80_000, tailVadSampleCount: 0, s),
-        "spec policy: tail-silent -> prefix only");
-
-    // Final equals snapshot (rare: snapshot caught the whole thing) -> prefix only.
+        SpeculativeCachePolicy.Decide(96000, 80000, Tail(16000, SileroVadService.SpeechStatus.Silence), s),
+        "spec policy: explicit silence uses prefix despite preserved audio");
     AssertEqual(SpeculativeCachePolicy.Decision.UsePrefixOnly,
-        SpeculativeCachePolicy.Decide(finalRawSampleCount: 96_000, snapshotRawSampleCount: 96_000, tailVadSampleCount: 0, s),
-        "spec policy: final == snapshot -> prefix only");
-
-    // Final has 2 s of new speech beyond the snapshot, with voiced VAD output -> decode tail.
+        SpeculativeCachePolicy.Decide(96000, 96000, null, s), "spec policy: exact snapshot");
     AssertEqual(SpeculativeCachePolicy.Decision.UsePrefixPlusTail,
-        SpeculativeCachePolicy.Decide(finalRawSampleCount: 128_000, snapshotRawSampleCount: 96_000, tailVadSampleCount: 32_000, s),
-        "spec policy: voiced tail -> prefix + tail");
-
-    // Tail VAD output is below the silence floor (<=100 ms) -> treat as silence, prefix only.
-    AssertEqual(SpeculativeCachePolicy.Decision.UsePrefixOnly,
-        SpeculativeCachePolicy.Decide(finalRawSampleCount: 128_000, snapshotRawSampleCount: 96_000, tailVadSampleCount: 1_000, s),
-        "spec policy: sub-floor tail -> prefix only");
-
-    // Tail has real speech but is short (250 ms of voiced VAD) -> cold pass, never dropped.
-    // This is the bug fix: previously this final phrase was discarded as "too short".
+        SpeculativeCachePolicy.Decide(128000, 96000, Tail(32000, SileroVadService.SpeechStatus.Speech), s),
+        "spec policy: substantial speech tail");
+    foreach (int count in new[] { 1000, 4000, 7900 })
+        AssertEqual(SpeculativeCachePolicy.Decision.ColdPass,
+            SpeculativeCachePolicy.Decide(128000, 96000, Tail(count, SileroVadService.SpeechStatus.Speech), s),
+            "spec policy: short speech is never discarded " + count);
     AssertEqual(SpeculativeCachePolicy.Decision.ColdPass,
-        SpeculativeCachePolicy.Decide(finalRawSampleCount: 128_000, snapshotRawSampleCount: 96_000, tailVadSampleCount: 4_000, s),
-        "spec policy: short real tail -> cold pass (not dropped)");
-
-    // Just below the reliable-tail threshold (~480 ms voiced) -> still cold pass, not dropped.
+        SpeculativeCachePolicy.Decide(96000, 80000, null, s), "spec policy: unanalyzed tail");
     AssertEqual(SpeculativeCachePolicy.Decision.ColdPass,
-        SpeculativeCachePolicy.Decide(finalRawSampleCount: 160_000, snapshotRawSampleCount: 96_000, tailVadSampleCount: 7_900, s),
-        "spec policy: sub-reliable real tail -> cold pass");
-
-    // No snapshot at all -> cold pass.
+        SpeculativeCachePolicy.Decide(96000, 80000, Tail(16000, SileroVadService.SpeechStatus.Uncertain), s),
+        "spec policy: uncertain quiet tail");
     AssertEqual(SpeculativeCachePolicy.Decision.ColdPass,
-        SpeculativeCachePolicy.Decide(finalRawSampleCount: 96_000, snapshotRawSampleCount: 0, tailVadSampleCount: 0, s),
-        "spec policy: no snapshot -> cold pass");
-
-    // Feature disabled -> cold pass regardless.
-    var off = new AppSettings { BackgroundRecognitionEnabled = false };
+        SpeculativeCachePolicy.Decide(96000, 0, null, s), "spec policy: no snapshot");
     AssertEqual(SpeculativeCachePolicy.Decision.ColdPass,
-        SpeculativeCachePolicy.Decide(finalRawSampleCount: 96_000, snapshotRawSampleCount: 80_000, tailVadSampleCount: 0, off),
-        "spec policy: feature flag off -> cold pass");
+        SpeculativeCachePolicy.Decide(80000, 96000, null, s), "spec policy: shorter final buffer");
+    AssertEqual(SpeculativeCachePolicy.Decision.ColdPass,
+        SpeculativeCachePolicy.Decide(96000, 80000, Tail(16000, SileroVadService.SpeechStatus.Silence),
+            new AppSettings { BackgroundRecognitionEnabled = false }), "spec policy: disabled");
 }
 
 static void AssertPasteTargetPolicy()
@@ -681,6 +665,42 @@ static void AssertTextInjectionService()
         AssertEqual(0, mock.SentChars.Count, "wt: no per-char typing");
         AssertEqual("Terminal text", mock.ClipboardContent, "wt: transcript went via clipboard");
     }
+    // A prepared AGY profile selects one clipboard operation without changing
+    // the configured method for an unrelated console.
+    {
+        var mock = new MockWindowBridge { ClipboardMethod = "CtrlV" };
+        var res = new TextInjectionService(mock).Paste("AGY text", new AppSettings { PasteMethod = "Direct" }, mock.ForegroundWindow);
+        AssertEqual(PasteOutcome.Delivered, res.Outcome, "agy: chord accepted");
+        AssertEqual(0, mock.SentChars.Count, "agy: no character events");
+        AssertEqual(4u, mock.SentKeyCount, "agy: one clipboard chord");
+        AssertEqual("AGY text", mock.ClipboardContent, "agy: text available to app");
+    }
+    {
+        var mock = new MockWindowBridge();
+        var res = new TextInjectionService(mock).Paste("Other console", new AppSettings { PasteMethod = "Direct" }, mock.ForegroundWindow);
+        AssertEqual(13, mock.SentChars.Count, "unknown console: configured Direct retained");
+    }
+    {
+        var mock = new MockWindowBridge { ClipboardMethod = "CtrlV" };
+        new TextInjectionService(mock).Paste("Retype", new AppSettings { PasteMethod = "Direct" }, IntPtr.Zero);
+        AssertEqual(6, mock.SentChars.Count, "agy: recovery retains Direct");
+        AssertEqual(0u, mock.SentKeyCount, "agy: prepared route does not override recovery");
+    }
+    {
+        var mock = new MockWindowBridge { ClipboardMethod = "CtrlV" };
+        var res = new TextInjectionService(mock).Paste("Disabled", new AppSettings { PasteMethod = "None" }, mock.ForegroundWindow);
+        AssertEqual(0u, mock.SentKeyCount, "agy: explicit None retained");
+        AssertEqual(0, mock.SentChars.Count, "agy: None emits no text");
+    }
+    {
+        var mock = new MockWindowBridge();
+        mock.OnSleep = () => mock.ForegroundWindow = new IntPtr(0x9999);
+        var res = new TextInjectionService(mock).Paste("Keep me", new AppSettings
+            { PasteMethod = "CtrlV", PasteDelayMs = 50, PasteFocusPolicy = "RefuseAndCopy" }, mock.ForegroundWindow);
+        AssertEqual(PasteOutcome.WrongWindow, res.Outcome, "clipboard: focus steal during delay refused");
+        AssertEqual(0u, mock.SentKeyCount, "clipboard: no chord into changed window");
+        AssertEqual("Keep me", mock.ClipboardContent, "clipboard: recovery text preserved");
+    }
 }
 
 sealed class MockWindowBridge : IWindowBridge
@@ -723,6 +743,9 @@ sealed class MockWindowBridge : IWindowBridge
 
     public bool WindowsTerminal { get; set; } = false;
     public bool IsWindowsTerminalForeground() => WindowsTerminal;
+    public string? ClipboardMethod { get; set; }
+    public string? PreferredClipboardMethod(IntPtr hwnd) => ClipboardMethod;
+    public Action? OnSleep { get; set; }
 
     public bool IsElevationMismatch(IntPtr hwnd, out string targetName, out int lastErr)
     {
@@ -757,7 +780,7 @@ sealed class MockWindowBridge : IWindowBridge
 
     public string? TryReadClipboard() => ClipboardContent;
 
-    public void Sleep(int ms) { }
+    public void Sleep(int ms) => OnSleep?.Invoke();
 
     public int GetLastWin32Error() => LastWin32Error;
 }

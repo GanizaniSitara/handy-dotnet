@@ -10,6 +10,7 @@ using System.Windows.Media;
 using System.Windows.Threading;
 using Handy.PInvoke;
 using Handy.Services;
+using Microsoft.Win32;
 
 namespace Handy;
 
@@ -75,6 +76,13 @@ public partial class App : Application
     // non-reentrant) so a still-in-flight speculative pass blocks — not
     // collides with — a cold final pass.
     private readonly SemaphoreSlim _asrGate = new(1, 1);
+    private TranscriptionWarmup? _asrWarmup;
+    private volatile bool _modelLoading;
+    private Task _modelLoadTask = Task.CompletedTask;
+    private int _modelLoadGeneration;
+    private Func<AppSettings, string, string, ITranscriptionService> _createAsr = CreateTranscriptionService;
+    private Func<string, SileroVadService> _createVad = path => new(path);
+    internal bool IsModelLoading => _modelLoading;
 
     // When decoding only the tail (UsePrefixPlusTail), include this much audio
     // BEFORE the snapshot boundary so a word straddling the splice point is fully
@@ -92,6 +100,7 @@ public partial class App : Application
 
     private long _lastNonSilentTicks;
     private long _lastSpecSnapshotSamples;
+    private long _lastSpecSpeechTicks;
     private int _specInFlight;
     private int _specStartedCount;
     private int _specCompletedCount;
@@ -99,7 +108,6 @@ public partial class App : Application
 
     private sealed record SpeculativeResult(
         string RawText,
-        string Text,
         int SnapshotSamples,
         int VadOutSamples,
         long FinishedTicks);
@@ -195,10 +203,9 @@ public partial class App : Application
         }
         _session.Start();
 
-        _asr = CreateTranscriptionService(_settings, _dataDir, _parakeetModelDir);
         _activeBackend = NormalizeBackend(_settings.TranscriptionBackend);
         _activeWhisperModel = WhisperTranscriptionService.NormalizeModelName(_settings.WhisperModel);
-        _vad = new SileroVadService(Path.Combine(_dataDir, "models", "silero_vad.onnx"));
+        _modelLoading = true;
         _audio = new AudioCaptureService(_settings.MicrophoneDeviceName);
         _audio.OnLevels += levels => _overlay?.SetLevels(levels);
         // Unconditional liveness stamp. OnLevels only fires while a recording is
@@ -261,13 +268,93 @@ public partial class App : Application
         // from clean exits.
         Log.Info($"Session: started id={_session.SessionId} version={Handy.MainWindow.ResolveDisplayVersion()} " +
                  $"pid={Environment.ProcessId} os={Environment.OSVersion.Version} backend={_activeBackend} " +
-                 $"model={(_asr.IsReady ? DescribeActiveModelPath(_settings, _dataDir, _parakeetModelDir) : "NOT FOUND — see README")}");
+                 $"model=LOADING ({DescribeActiveModelPath(_settings, _dataDir, _parakeetModelDir)})");
         Log.Info($"PTT={_settings.PushToTalk} Paste={_settings.PasteMethod} Autostart={_settings.Autostart}");
 
         var shouldStartHidden = _settings.StartHidden || startHiddenOverride;
         var trayAvailable = _tray is not null;
         if (showWindow || !shouldStartHidden || !trayAvailable)
             ShowSettings();
+
+        SystemEvents.PowerModeChanged += OnPowerModeChanged;
+        QueueModelLoad("startup");
+        Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.ContextIdle, new Action(() =>
+        {
+            if (_recording || _transcribing || _overlay is null || _overlay.IsVisible) return;
+            try { _overlay.PrepareForFirstShow(); }
+            catch (Exception ex) { Log.Warn($"Overlay preparation failed: {ex.Message}"); }
+        }));
+    }
+
+    private void QueueModelLoad(string reason)
+    {
+        var generation = ++_modelLoadGeneration;
+        var previous = _modelLoadTask;
+        var selection = new AppSettings
+        {
+            TranscriptionBackend = _settings.TranscriptionBackend,
+            WhisperModel = _settings.WhisperModel,
+            ParakeetVariant = _settings.ParakeetVariant,
+            ParakeetEncoderThreads = _settings.ParakeetEncoderThreads,
+            ParakeetPrioritizeInference = _settings.ParakeetPrioritizeInference,
+        };
+        var modelDir = _parakeetModelDir;
+        _modelLoading = true;
+        _tray?.SetState(TrayIconManager.State.Loading);
+        _settingsWindow?.RefreshModelStatus();
+        _modelLoadTask = Task.Run(async () =>
+        {
+            await previous.ConfigureAwait(false);
+            if (generation != _modelLoadGeneration || Volatile.Read(ref _shutdownCleanupStarted) != 0) return;
+            _asrWarmup?.Dispose();
+            await _asrGate.WaitAsync().ConfigureAwait(false);
+            ITranscriptionService? candidate = null;
+            try
+            {
+                var timer = Stopwatch.StartNew();
+                candidate = _createAsr(selection, _dataDir, modelDir);
+                if (generation != _modelLoadGeneration || Volatile.Read(ref _shutdownCleanupStarted) != 0)
+                {
+                    return;
+                }
+                _vad ??= _createVad(Path.Combine(_dataDir, "models", "silero_vad.onnx"));
+                var old = _asr;
+                _asr = candidate;
+                candidate = null;
+                old?.Dispose();
+                _specCache = null;
+                _asrWarmup = CreateWarmup();
+                Log.Info($"Flow: model-load reason={reason} ready={_asr.IsReady} elapsedMs={timer.ElapsedMilliseconds}");
+            }
+            catch (Exception ex)
+            {
+                _asr?.Dispose();
+                _asr = null;
+                Log.Error($"Model loading failed: {ex}");
+            }
+            finally { candidate?.Dispose(); _asrGate.Release(); }
+            if (generation != _modelLoadGeneration || Volatile.Read(ref _shutdownCleanupStarted) != 0) return;
+            _modelLoading = false;
+            // Never synchronously marshal from this worker: shutdown drains it
+            // on the UI thread before disposing the native sessions.
+            Dispatcher?.BeginInvoke(new Action(() =>
+            {
+                if (generation != _modelLoadGeneration || Volatile.Read(ref _shutdownCleanupStarted) != 0) return;
+                SetUiState(_recording, _transcribing, hideOverlay: false);
+                _settingsWindow?.RefreshModelStatus();
+            }));
+            _ = _asrWarmup?.RequestAsync(reason);
+        });
+    }
+
+    private TranscriptionWarmup CreateWarmup() =>
+        new(_asr!, _asrGate, () => _recording || _transcribing ||
+            Volatile.Read(ref _shutdownCleanupStarted) != 0);
+
+    private void OnPowerModeChanged(object sender, PowerModeChangedEventArgs e)
+    {
+        if (e.Mode == PowerModes.Resume && Volatile.Read(ref _shutdownCleanupStarted) == 0)
+            _ = _asrWarmup?.RequestAsync("resume");
     }
 
     private void OnExit(object sender, ExitEventArgs e)
@@ -303,6 +390,10 @@ public partial class App : Application
         if (Interlocked.Exchange(ref _shutdownCleanupStarted, 1) != 0)
             return;
 
+        SystemEvents.PowerModeChanged -= OnPowerModeChanged;
+        _modelLoadTask?.GetAwaiter().GetResult();
+        _asrWarmup?.Dispose();
+
         _session?.SetPhase(SessionPhase.Shutdown);
 
         if (saveSettings)
@@ -331,8 +422,9 @@ public partial class App : Application
         try { _specCts?.Dispose(); } catch { }
         _hook?.Dispose();
         _audio?.Dispose();
-        _asr?.Dispose();
-        _vad?.Dispose();
+        _asrGate.Wait();
+        try { _asr?.Dispose(); _vad?.Dispose(); }
+        finally { _asrGate.Release(); }
         _feedback?.Dispose();
         _tray?.Dispose();
         try { _asrGate.Dispose(); } catch { }
@@ -420,19 +512,19 @@ public partial class App : Application
         _historyWindow.Activate();
     }
 
-    private void OnTrigger(bool pressed)
-        => HandleCaptureTrigger(pressed, CaptureDestination.Paste);
+    private void OnTrigger(bool pressed, IntPtr foreground = default)
+        => HandleCaptureTrigger(pressed, CaptureDestination.Paste, foreground);
 
-    private void OnTaskCapture(bool pressed)
-        => HandleCaptureTrigger(pressed, CaptureDestination.TaskIntake);
+    private void OnTaskCapture(bool pressed, IntPtr foreground = default)
+        => HandleCaptureTrigger(pressed, CaptureDestination.TaskIntake, foreground);
 
-    private void HandleCaptureTrigger(bool pressed, CaptureDestination destination)
+    private void HandleCaptureTrigger(bool pressed, CaptureDestination destination, IntPtr foreground)
     {
-        if (_audio is null || _asr is null || _injector is null) return;
+        if (_audio is null || _injector is null) return;
 
         if (_settings.PushToTalk)
         {
-            if (pressed && !_recording) StartRecording(destination);
+            if (pressed && !_recording) StartRecording(destination, foreground);
             else if (!pressed && _recording && _captureDestination == destination) StopAndTranscribe();
             return;
         }
@@ -441,7 +533,7 @@ public partial class App : Application
         if (!pressed) return;
         if (!_recording)
         {
-            StartRecording(destination);
+            StartRecording(destination, foreground);
         }
         else if (_captureDestination == destination)
         {
@@ -453,7 +545,7 @@ public partial class App : Application
         }
     }
 
-    private void StartRecording(CaptureDestination destination)
+    private void StartRecording(CaptureDestination destination, IntPtr foreground)
     {
         // Capture/recovery admission runs on the dispatcher. Retype claims its
         // busy flag before yielding, so neither path can start over the other.
@@ -464,6 +556,13 @@ public partial class App : Application
             Log.Warn("Cannot start recording while dictation or recovery is active.");
             return;
         }
+        if (_modelLoading)
+        {
+            Log.Info("Flow: capture requested while model is loading.");
+            _tray?.Notify("Handy.NET", "Model is loading. Try dictation again when it is ready.");
+            FlashOverlay("Loading model…", success: false);
+            return;
+        }
         if (_asr is null || !_asr.IsReady)
         {
             Log.Warn("Model not loaded; cannot start recording.");
@@ -471,18 +570,29 @@ public partial class App : Application
             return;
         }
         _recording = true;
+        var startTimer = Stopwatch.StartNew();
         _dictationGeneration++;
         _captureDestination = destination;
         _captureStartedAtUtc = DateTimeOffset.UtcNow;
-        _captureForeground = ForegroundWindowSnapshot.Capture();
+        _captureForeground = foreground == IntPtr.Zero
+            ? ForegroundWindowSnapshot.Capture() : ForegroundWindowSnapshot.Capture(foreground);
+        var foregroundMs = startTimer.ElapsedMilliseconds;
         _session?.SetPhase(SessionPhase.Listening);
         _recStartTicks = Stopwatch.GetTimestamp();
         ResetSpeculativeState();
         _tray?.SetState(Services.TrayIconManager.State.Recording);
         ShowOverlay(RecordingOverlay.State.Recording);
+        var overlayMs = startTimer.ElapsedMilliseconds - foregroundMs;
         _feedback?.PlayStart();
+        var feedbackMs = startTimer.ElapsedMilliseconds - foregroundMs - overlayMs;
         _audio!.Start(_settings.PreRollMs);
+        var captureMs = startTimer.ElapsedMilliseconds - foregroundMs - overlayMs - feedbackMs;
+        if (destination == CaptureDestination.Paste)
+            _injector!.PrepareTarget(new IntPtr(_captureForeground.Hwnd));
         StartCaptureWatchdog();
+        Log.Info($"Flow: capture-start foregroundMs={foregroundMs} overlayMs={overlayMs} " +
+                 $"feedbackMs={feedbackMs} captureMs={captureMs} totalMs={startTimer.ElapsedMilliseconds} " +
+                 $"generation={_dictationGeneration} targetHwnd=0x{_captureForeground.Hwnd:X} targetClass={_captureForeground.ClassName}");
         Log.Info($"Recording started destination={destination} (pre-roll {_settings.PreRollMs} ms).");
     }
 
@@ -570,6 +680,7 @@ public partial class App : Application
         _specCts = new CancellationTokenSource();
         _lastNonSilentTicks = Stopwatch.GetTimestamp();
         _lastSpecSnapshotSamples = 0;
+        _lastSpecSpeechTicks = _lastNonSilentTicks;
         Volatile.Write(ref _specInFlight, 0);
         _specStartedCount = 0;
         _specCompletedCount = 0;
@@ -591,12 +702,13 @@ public partial class App : Application
 
         if (maxBar > _settings.BackgroundSilenceBarThreshold)
         {
-            _lastNonSilentTicks = now;
+            Interlocked.Exchange(ref _lastNonSilentTicks, now);
             return;
         }
 
         var pauseMs = (now - _lastNonSilentTicks) * 1000 / Stopwatch.Frequency;
         if (pauseMs < _settings.BackgroundPauseTriggerMs) return;
+        if (Interlocked.Read(ref _lastSpecSpeechTicks) >= Interlocked.Read(ref _lastNonSilentTicks)) return;
 
         if (Interlocked.CompareExchange(ref _specInFlight, 1, 0) != 0) return;
         var cts = _specCts;
@@ -606,7 +718,8 @@ public partial class App : Application
 
         // Hand off snapshot + ASR to a worker so we don't block the audio callback.
         var token = cts.Token;
-        _ = Task.Run(() => RunSpeculativePass(asr, token), token);
+        // Always enter the delegate/finally, even if cancellation races dispatch.
+        _ = Task.Run(() => RunSpeculativePass(asr, token));
     }
 
     private async Task RunSpeculativePass(ITranscriptionService asr, CancellationToken token)
@@ -622,35 +735,38 @@ public partial class App : Application
             if (_audio.RecordingSampleCount - _lastSpecSnapshotSamples < minNewSamples) return;
             if (token.IsCancellationRequested) return;
 
-            var snapshot = _audio.SnapshotCurrentRecording();
-            _specStartedCount++;
-            _lastSpecSnapshotSamples = snapshot.Length;
-
-            float[] forAsr = snapshot;
-            if (_settings.VadEnabled && _vad is not null && _vad.IsReady)
-                forAsr = _vad.Trim(snapshot, _settings.VadThreshold, _settings.VadPaddingMs);
-
-            if (forAsr.Length < 16000 / 4) return; // sub-250 ms after VAD — skip
-
-            // _asrGate serialises against the final pass; an in-flight final
-            // pass will simply make this speculative pass wait then run, but
-            // by then the final pass has already used the prior cache (or
-            // not), so a late speculative pass just refreshes for the next
-            // dictation slot, which is harmless.
+            var speechTicks = Interlocked.Read(ref _lastNonSilentTicks);
             await _asrGate.WaitAsync(token).ConfigureAwait(false);
             try
             {
-                if (token.IsCancellationRequested) return;
+                if (token.IsCancellationRequested || !_recording) return;
+                var prefix = _specCache;
+                var start = prefix is null ? 0 : Math.Max(0, prefix.SnapshotSamples - TailLookbackSamples);
+                var snapshot = _audio.SnapshotCurrentRecording(start);
+                var snapshotSamples = start + snapshot.Length;
+                if (snapshot.Length == 0) return;
+                _specStartedCount++;
+                _lastSpecSnapshotSamples = snapshotSamples;
+                Interlocked.Exchange(ref _lastSpecSpeechTicks, speechTicks);
+                var forAsr = snapshot;
+                if (_settings.VadEnabled && _vad?.IsReady == true)
+                {
+                    var analysis = _vad.Analyze(snapshot, _settings.VadThreshold, _settings.VadPaddingMs);
+                    if (analysis.Status == SileroVadService.SpeechStatus.Silence) return;
+                    forAsr = analysis.Samples;
+                }
+                if (forAsr.Length < 16000 / 4) return;
                 var sw = Stopwatch.StartNew();
-                var raw = await asr.TranscribeAsync(forAsr, CreateTranscriptionOptions(_settings))
-                                   .ConfigureAwait(false);
-                sw.Stop();
+                var decoded = await asr.TranscribeAsync(forAsr, CreateTranscriptionOptions(_settings)).ConfigureAwait(false);
                 if (token.IsCancellationRequested) return;
-                var rawText = raw ?? string.Empty;
-                var text = PostProcessTranscript(rawText, _settings);
+                var rawText = prefix is null ? decoded ?? string.Empty
+                    : TranscriptSplicer.Combine(prefix.RawText, decoded ?? string.Empty);
+                // An empty pass must not advance the reusable prefix past audio
+                // that has not been recognized.
+                if (string.IsNullOrWhiteSpace(decoded)) return;
                 _specCompletedCount++;
-                _specCache = new SpeculativeResult(rawText, text, snapshot.Length, forAsr.Length, Stopwatch.GetTimestamp());
-                Log.Info($"Spec: snapshotSamples={snapshot.Length} vadOutSamples={forAsr.Length} asrMs={sw.ElapsedMilliseconds} rawLen={rawText.Length} text=\"{text}\"");
+                _specCache = new SpeculativeResult(rawText, snapshotSamples, forAsr.Length, Stopwatch.GetTimestamp());
+                Log.Info($"Spec: snapshotSamples={snapshotSamples} newAsrSamples={forAsr.Length} asrMs={sw.ElapsedMilliseconds} rawLen={rawText.Length}");
             }
             finally
             {
@@ -682,13 +798,15 @@ public partial class App : Application
         var captureStartedAtUtc = _captureStartedAtUtc;
         var captureForeground = _captureForeground;
         var startTicks = _recStartTicks;
+        var stopTicks = Stopwatch.GetTimestamp();
         var sw = Stopwatch.StartNew();
 
         var stopSw = Stopwatch.StartNew();
-        _session?.SetPhase(SessionPhase.Stopping);
         float[] samples;
         try
         {
+            SetUiState(isRecording: false, isTranscribing: true, hideOverlay: false);
+            _session?.SetPhase(SessionPhase.Stopping);
             samples = await _audio!.StopAsync(_settings.PostRollMs).ConfigureAwait(false);
         }
         catch (Exception ex)
@@ -714,7 +832,7 @@ public partial class App : Application
             Log.Info("Recording cancelled; skipping transcription.");
             try { _specCts?.Cancel(); } catch { }
             _specCache = null;
-            EmitDiag(startTicks, samples.Length, samples.Length, samples.Length, 0, 0, 0, "-", false, "cancelled",
+            EmitDiag(startTicks, stopTicks, samples.Length, samples.Length, samples.Length, 0, 0, 0, "-", false, "cancelled",
                      stopMs, 0, 0, 0, 0, 0, sw.ElapsedMilliseconds,
                      _specStartedCount, _specCompletedCount, false, -1, 0, 0);
             return;
@@ -727,14 +845,13 @@ public partial class App : Application
             Log.Warn("Recording too short; skipping.");
             try { _specCts?.Cancel(); } catch { }
             _specCache = null;
-            EmitDiag(startTicks, samples.Length, samples.Length, samples.Length, 0, 0, 0, "-", false, "tooShort",
+            EmitDiag(startTicks, stopTicks, samples.Length, samples.Length, samples.Length, 0, 0, 0, "-", false, "tooShort",
                      stopMs, 0, 0, 0, 0, 0, sw.ElapsedMilliseconds,
                      _specStartedCount, _specCompletedCount, false, -1, 0, 0);
             return;
         }
 
         _feedback?.PlayStop();
-        SetUiState(isRecording: false, isTranscribing: true, hideOverlay: false);
         _session?.SetPhase(SessionPhase.Vad);
         _transcribing = true;
         int rawSampleCount = samples.Length;
@@ -756,148 +873,90 @@ public partial class App : Application
         long specTailAsrMs = 0;
         try
         {
-            if (_settings.VadEnabled && _vad is not null && _vad.IsReady)
-            {
-                // Trim leading/trailing silence only — Smooth() was previously used here
-                // but it removes mid-clip silence, severing transcription context across pauses.
-                var vadSw = Stopwatch.StartNew();
-                samples = _vad.Trim(samples, _settings.VadThreshold, _settings.VadPaddingMs);
-                vadSw.Stop();
-                vadMs = vadSw.ElapsedMilliseconds;
-                vadOutCount = samples.Length;
-            }
-
-            if (_settings.SaveLastAudioForDiagnostics)
-                SaveLastAudioDiagnostics(rawCaptureSamples, samples, _dataDir);
-
             var asr = _asr;
             if (asr is null || !asr.IsReady) throw new InvalidOperationException("Transcription model not loaded.");
-
-            // Additive prepass reuse: the prepass produced a transcript of a
-            // snapshot of the recording at the moment of a pause. We keep
-            // that as a *prefix* and only run ASR on the tail of audio
-            // captured since the snapshot, then splice. If the tail is
-            // silence (user trailed off), we skip ASR entirely and use the
-            // prefix verbatim. If there's no usable prepass, run the full
-            // cold pass on the final buffer as before.
-            string? text = null;
-            string? raw = null;
-            int snapRawSamples = 0, tailRawSamples = 0, tailVadSamples = 0;
-
-            void RecomputeTailMetrics(SpeculativeResult? c)
+            string text;
+            string raw;
+            _session?.SetPhase(SessionPhase.AsrWait);
+            var gateTimer = Stopwatch.StartNew();
+            await _asrGate.WaitAsync().ConfigureAwait(false);
+            try
             {
-                snapRawSamples = c?.SnapshotSamples ?? 0;
-                tailRawSamples = c is null ? 0 : Math.Max(0, rawCaptureSamples.Length - snapRawSamples);
-                if (tailRawSamples == 0) { tailVadSamples = 0; return; }
-                if (_settings.VadEnabled && _vad is not null && _vad.IsReady)
+                Log.Info($"Flow: asr-gate generation={generation} waitMs={gateTimer.ElapsedMilliseconds}");
+                // Read the completed prefix once after the gate. Full-recording
+                // VAD is needed only when this prefix cannot be reused.
+                var cache = _specCache;
+                if (string.IsNullOrWhiteSpace(cache?.RawText)) cache = null;
+                var tailCount = cache is null ? 0 : Math.Max(0, rawCaptureSamples.Length - cache.SnapshotSamples);
+                SileroVadService.Analysis? tail = null;
+                var vadTimer = Stopwatch.StartNew();
+                if (cache is not null && tailCount > 0 && rawCaptureSamples.Length >= cache.SnapshotSamples)
                 {
-                    var t = new float[tailRawSamples];
-                    Array.Copy(rawCaptureSamples, snapRawSamples, t, 0, tailRawSamples);
-                    tailVadSamples = _vad.Trim(t, _settings.VadThreshold, _settings.VadPaddingMs).Length;
+                    var tailAudio = new float[tailCount];
+                    Array.Copy(rawCaptureSamples, cache.SnapshotSamples, tailAudio, 0, tailCount);
+                    if (_settings.VadEnabled && _vad?.IsReady == true)
+                        tail = _vad.Analyze(tailAudio, _settings.VadThreshold, _settings.VadPaddingMs);
                 }
-                else { tailVadSamples = tailRawSamples; }
-            }
-
-            var cache = _specCache;
-            RecomputeTailMetrics(cache);
-            var decision = SpeculativeCachePolicy.Decide(rawCaptureSamples.Length, snapRawSamples, tailVadSamples, _settings);
-            specTailMs = tailRawSamples * 1000 / 16000;
-
-            if (decision == SpeculativeCachePolicy.Decision.UsePrefixOnly && cache is not null)
-            {
-                raw = cache.RawText;
+                var decision = SpeculativeCachePolicy.Decide(rawCaptureSamples.Length,
+                    cache?.SnapshotSamples ?? 0, tail, _settings);
+                specTailMs = (int)SamplesToMs(tailCount);
+                if (decision == SpeculativeCachePolicy.Decision.UsePrefixOnly && cache is not null)
+                {
+                    raw = cache.RawText;
+                    samples = Array.Empty<float>();
+                }
+                else
+                {
+                    if (decision == SpeculativeCachePolicy.Decision.UsePrefixPlusTail && cache is not null)
+                    {
+                        var start = Math.Max(0, cache.SnapshotSamples - TailLookbackSamples);
+                        samples = new float[rawCaptureSamples.Length - start];
+                        Array.Copy(rawCaptureSamples, start, samples, 0, samples.Length);
+                        // Preserve the 800 ms overlap and quiet word releases.
+                        // Do not scan the already-analyzed tail again.
+                    }
+                    else if (tail?.Status != SileroVadService.SpeechStatus.Uncertain &&
+                             _settings.VadEnabled && _vad?.IsReady == true)
+                        samples = _vad.Trim(rawCaptureSamples, _settings.VadThreshold, _settings.VadPaddingMs);
+                    vadMs = vadTimer.ElapsedMilliseconds;
+                    vadOutCount = samples.Length;
+                    _session?.SetPhase(SessionPhase.Asr);
+                    var asrTimer = Stopwatch.StartNew();
+                    var decoded = await asr.TranscribeAsync(samples, CreateTranscriptionOptions(_settings)).ConfigureAwait(false);
+                    asrMs = asrTimer.ElapsedMilliseconds;
+                    if (decision == SpeculativeCachePolicy.Decision.UsePrefixPlusTail && cache is not null)
+                    {
+                        raw = TranscriptSplicer.Combine(cache.RawText, decoded ?? string.Empty);
+                        specTailAsrMs = asrMs;
+                    }
+                    else raw = decoded ?? string.Empty;
+                }
+                if (decision != SpeculativeCachePolicy.Decision.ColdPass && cache is not null)
+                {
+                    specPrefixUsed = true;
+                    specStaleMs = (Stopwatch.GetTimestamp() - cache.FinishedTicks) * 1000 / Stopwatch.Frequency;
+                    if (decision == SpeculativeCachePolicy.Decision.UsePrefixOnly)
+                        vadMs = vadTimer.ElapsedMilliseconds;
+                    vadOutCount = samples.Length;
+                }
+                Log.Info($"Flow: recognition generation={generation} decision={decision} asrSamples={samples.Length}");
                 rawLen = raw.Length;
-                Log.Info($"Raw: \"{raw}\" (spec prefix-only)");
+                Log.Info($"Raw: \"{raw}\"");
                 _session?.SetPhase(SessionPhase.Post);
+                var processingTimer = Stopwatch.StartNew();
                 text = PostProcessTranscript(raw, _settings);
-                asrMs = 0;
-                specPrefixUsed = true;
-                specStaleMs = (Stopwatch.GetTimestamp() - cache.FinishedTicks) * 1000 / Stopwatch.Frequency;
-                Log.Info($"Spec prefix-only: text=\"{text}\" tailRawMs={specTailMs} tailVadSamples={tailVadSamples}");
+                postMs = processingTimer.ElapsedMilliseconds;
+                if (_settings.SaveLastAudioForDiagnostics)
+                    SaveLastAudioDiagnostics(rawCaptureSamples, samples, _dataDir);
             }
-            else
-            {
-                // Either cold pass or prefix+tail — both need _asrGate so we
-                // don't collide with an in-flight prepass on the same ASR.
-                _session?.SetPhase(SessionPhase.AsrWait);
-                await _asrGate.WaitAsync().ConfigureAwait(false);
-                try
-                {
-                    // Re-evaluate the cache: a prepass may have landed while
-                    // we were waiting on the gate.
-                    _session?.SetPhase(SessionPhase.Vad);
-                    cache = _specCache;
-                    RecomputeTailMetrics(cache);
-                    decision = SpeculativeCachePolicy.Decide(rawCaptureSamples.Length, snapRawSamples, tailVadSamples, _settings);
-                    specTailMs = tailRawSamples * 1000 / 16000;
-
-                    if (decision == SpeculativeCachePolicy.Decision.UsePrefixOnly && cache is not null)
-                    {
-                        raw = cache.RawText;
-                        rawLen = raw.Length;
-                        Log.Info($"Raw: \"{raw}\" (spec prefix-only)");
-                        _session?.SetPhase(SessionPhase.Post);
-                        text = PostProcessTranscript(raw, _settings);
-                        asrMs = 0;
-                        specPrefixUsed = true;
-                        specStaleMs = (Stopwatch.GetTimestamp() - cache.FinishedTicks) * 1000 / Stopwatch.Frequency;
-                        Log.Info($"Spec prefix-only (post-gate): text=\"{text}\"");
-                    }
-                    else if (decision == SpeculativeCachePolicy.Decision.UsePrefixPlusTail && cache is not null)
-                    {
-                        // Decode the tail with a short lookback into the snapshot
-                        // region so a word straddling the splice point is fully
-                        // captured. TranscriptSplicer dedups the overlap at the join.
-                        var lookbackStart = Math.Max(0, snapRawSamples - TailLookbackSamples);
-                        var tailLen = rawCaptureSamples.Length - lookbackStart;
-                        var tailRaw = new float[tailLen];
-                        Array.Copy(rawCaptureSamples, lookbackStart, tailRaw, 0, tailLen);
-                        var tailForAsr = tailRaw;
-                        if (_settings.VadEnabled && _vad is not null && _vad.IsReady)
-                            tailForAsr = _vad.Trim(tailRaw, _settings.VadThreshold, _settings.VadPaddingMs);
-
-                        var asrSw = Stopwatch.StartNew();
-                        _session?.SetPhase(SessionPhase.Asr);
-                        var tailRawText = await asr.TranscribeAsync(tailForAsr, CreateTranscriptionOptions(_settings)).ConfigureAwait(false);
-                        asrSw.Stop();
-                        specTailAsrMs = asrSw.ElapsedMilliseconds;
-                        asrMs = specTailAsrMs;
-                        var tailRawString = tailRawText ?? string.Empty;
-                        raw = TranscriptSplicer.Combine(cache.RawText, tailRawString);
-                        rawLen = raw.Length;
-                        Log.Info($"Raw: \"{raw}\" (spec prefix+tail)");
-
-                        _session?.SetPhase(SessionPhase.Post);
-                        text = PostProcessTranscript(raw, _settings);
-                        specPrefixUsed = true;
-                        specStaleMs = (Stopwatch.GetTimestamp() - cache.FinishedTicks) * 1000 / Stopwatch.Frequency;
-                        Log.Info($"Spec prefix+tail: prefixRawLen={cache.RawText.Length} tailRawLen={tailRawString.Length} tailAudioMs={specTailMs} tailAsrMs={specTailAsrMs} text=\"{text}\"");
-                    }
-                    else
-                    {
-                        var asrSw = Stopwatch.StartNew();
-                        _session?.SetPhase(SessionPhase.Asr);
-                        raw = await asr.TranscribeAsync(samples, CreateTranscriptionOptions(_settings)).ConfigureAwait(false);
-                        asrSw.Stop();
-                        asrMs = asrSw.ElapsedMilliseconds;
-                        rawLen = raw?.Length ?? 0;
-                        Log.Info($"Raw: \"{raw}\"");
-                        _session?.SetPhase(SessionPhase.Post);
-                        text = PostProcessTranscript(raw ?? string.Empty, _settings);
-                    }
-                }
-                finally
-                {
-                    _asrGate.Release();
-                }
-            }
+            finally { _asrGate.Release(); }
 
             var postSw = Stopwatch.StartNew();
             filtLen = text.Length;
             if (_settings.AppendTrailingSpace && !string.IsNullOrEmpty(text))
                 text += ' ';
             postSw.Stop();
-            postMs = postSw.ElapsedMilliseconds;
+            postMs += postSw.ElapsedMilliseconds;
             Log.Info($"Transcript: {text}");
 
             // Late cancel. The decode is a synchronous native call we can't
@@ -964,7 +1023,8 @@ public partial class App : Application
                             outcome = result.Outcome.ToDiagToken();
                             Log.Warn($"Paste not delivered ({result.Outcome}): {result.Detail}");
                             CopyTextToClipboard(text, outcome);
-                            _tray?.Notify("Handy.NET", $"Not pasted — transcript copied to clipboard. {result.Detail}");
+                            var reason = result.Outcome == PasteOutcome.WrongWindow ? "Focus changed before paste." : "Paste could not complete.";
+                            _tray?.Notify("Handy.NET", $"{reason} Transcript saved. Focus the destination and press {_settings.RetypeLastHotkey} to insert it.");
                         }
                     }
                     catch (Exception pex)
@@ -1018,13 +1078,13 @@ public partial class App : Application
                 FlashOverlay("Capture failed — copied", success: false);
             else if (outcome is "wrongWindow" or "pasteInterrupted" or "pasteRefused"
                               or "pastePartial" or "pasteThrew")
-                FlashOverlay("Not pasted — copied", success: false);
+                FlashOverlay("Not pasted — saved", success: false);
             // Cancel any in-flight speculative work so it doesn't write to
             // _specCache after this dictation ends and accidentally get reused
             // on the next one with stale audio.
             try { _specCts?.Cancel(); } catch { }
             _specCache = null;
-            EmitDiag(startTicks, rawSampleCount, vadOutCount, samples.Length,
+            EmitDiag(startTicks, stopTicks, rawSampleCount, vadOutCount, samples.Length,
                      asrMs, rawLen, filtLen, pasteMethod, pasteOk, outcome,
                      stopMs, vadMs, postMs, historyMs, pasteMs, copyMs, sw.ElapsedMilliseconds,
                      _specStartedCount, _specCompletedCount, specPrefixUsed, specStaleMs, specTailMs, specTailAsrMs);
@@ -1034,7 +1094,7 @@ public partial class App : Application
     // One machine-greppable line per dictation. Pair with the existing per-stage
     // logs (Raw/Filter/Paste/Flow) when triaging "lost" dictations. Field order
     // is append-only so old parsers keep seeing the original fields first.
-    private void EmitDiag(long recStartTicks, int rawSamples, int vadOutSamples, int finalSamples,
+    private void EmitDiag(long recStartTicks, long recStopTicks, int rawSamples, int vadOutSamples, int finalSamples,
                           long asrMs, int rawLen, int filtLen,
                           string pasteMethod, bool pasteOk, string outcome,
                           long stopMs, long vadMs, long postMs, long historyMs,
@@ -1044,7 +1104,7 @@ public partial class App : Application
     {
         long heldMs = 0;
         if (recStartTicks > 0)
-            heldMs = (Stopwatch.GetTimestamp() - recStartTicks) * 1000 / Stopwatch.Frequency;
+            heldMs = (recStopTicks - recStartTicks) * 1000 / Stopwatch.Frequency;
 
 
         // Widen BEFORE the multiply. int32 overflows at rawSamples * 1000 >
@@ -1317,14 +1377,10 @@ public partial class App : Application
             return;
         }
 
-        var old = _asr;
         _parakeetModelDir = newParakeetDir;
-        _asr = CreateTranscriptionService(_settings, _dataDir, _parakeetModelDir);
         _activeBackend = backend;
         _activeWhisperModel = whisperModel;
-        old?.Dispose();
-        _specCache = null; // any cache from the previous backend is no longer comparable
-        _settingsWindow?.RefreshModelStatus();
+        QueueModelLoad("model-change");
         Log.Info($"Transcription backend switched to {_activeBackend} ({DescribeActiveModelPath(_settings, _dataDir, _parakeetModelDir)})");
     }
 
@@ -1713,7 +1769,9 @@ public partial class App : Application
             return new WhisperTranscriptionService(ResolveWhisperModelsDir(dataDir), settings.WhisperModel);
         }
 
-        return new ParakeetTranscriptionService(parakeetModelDir);
+        return new ParakeetTranscriptionService(parakeetModelDir,
+            encoderThreads: Math.Clamp(settings.ParakeetEncoderThreads, 1, Environment.ProcessorCount),
+            prioritizeInference: settings.ParakeetPrioritizeInference);
     }
 
     private static string NormalizeBackend(string? backend)

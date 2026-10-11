@@ -1,7 +1,62 @@
 using System;
 using System.IO;
 using System.Text.Json;
+using System.Diagnostics;
 using Handy.Services;
+
+if (args.Length == 3 && args[0] == "--bench-encoder")
+{
+    await PerformanceChecks.BenchEncoder(args[1], args[2]);
+    return;
+}
+
+if (args.Length is 3 or 4 && args[0] == "--bench-priority")
+{
+    await PerformanceChecks.BenchPriority(args[1], args[2], args.Length == 4 ? int.Parse(args[3]) : 4);
+    return;
+}
+
+if (args.Length is 3 or 4 && args[0] == "--bench-threads")
+{
+    await PerformanceChecks.BenchThreads(args[1], args[2], args.Length == 4 ? args[3] : "contention");
+    return;
+}
+
+if (args.Length == 2 && args[0] == "--probe-paste-target")
+{
+    // Read-only integration check: no clipboard, focus or input changes.
+    var hwnd = new IntPtr(Convert.ToInt64(args[1], 16));
+    var bridge = new DefaultWindowBridge();
+    for (int pass = 0; pass < 5; pass++)
+    {
+        var timer = Stopwatch.StartNew();
+        await bridge.PreparePasteTargetAsync(hwnd);
+        var probeMs = timer.Elapsed.TotalMilliseconds;
+        timer.Restart();
+        var method = bridge.PreferredClipboardMethod(hwnd);
+        Console.WriteLine(JsonSerializer.Serialize(new { pass, hwnd = args[1], method, probeMs,
+            validationMs = timer.Elapsed.TotalMilliseconds,
+            otherWindowMethod = bridge.PreferredClipboardMethod(new IntPtr(1)) }));
+    }
+    return;
+}
+
+if (args.Length == 5 && args[0] == "--bench-model-cache")
+{
+    await PerformanceChecks.BenchCache(args[1], args[2], args[3], args[4]);
+    return;
+}
+if (args.Length == 4 && args[0] == "--bench-vad-tail")
+{
+    await PerformanceChecks.BenchVad(args[1], args[2], args[3]);
+    return;
+}
+
+if (args.Length == 4 && args[0] == "--bench-warmup")
+{
+    await WarmupChecks.Bench(args[1], args[2], args[3]);
+    return;
+}
 
 var dir = Path.Combine(Path.GetTempPath(), "Handy.Recovery.Tests", Guid.NewGuid().ToString("N"));
 Directory.CreateDirectory(dir);
@@ -32,6 +87,8 @@ try
     HookChecks.Run();
     await RetypeChecks.Run();
     await CaptureAdmissionChecks.Run();
+    await WarmupChecks.Run();
+    await PerformanceChecks.Run();
     Console.WriteLine("Recovery shortcut migration and hook checks passed.");
 }
 catch (Exception ex)
