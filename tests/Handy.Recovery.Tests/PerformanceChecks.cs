@@ -197,11 +197,11 @@ static class PerformanceChecks
         Check(asr.IsReady, "provider benchmark model ready");
         Console.WriteLine(JsonSerializer.Serialize(new { requested = provider, actual = asr.ExecutionProvider, loadMs = loadTimer.ElapsedMilliseconds }));
         var samples = ReadWav(wav);
-        foreach (int seconds in new[] { 3, 7, 11, 20 })
+        foreach (int seconds in new[] { 3, 7, 11, 20, 30, 40 })
         {
-            var clip = seconds * 16000 <= samples.Length
-                ? samples.Take(seconds * 16000).ToArray()
-                : samples.Concat(samples).Take(seconds * 16000).ToArray();
+            // Long rambles: repeat the clip end to end as many times as needed.
+            var clip = Enumerable.Repeat(samples, seconds * 16000 / samples.Length + 1)
+                .SelectMany(x => x).Take(seconds * 16000).ToArray();
             for (int pass = 0; pass < passes; pass++)
             {
                 var timer = Stopwatch.StartNew();
