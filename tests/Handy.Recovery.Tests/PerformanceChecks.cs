@@ -117,7 +117,7 @@ static class PerformanceChecks
         Set("_settings", new AppSettings { BackgroundRecognitionEnabled = true, VadEnabled = false });
         var asr = new PhraseAsr();
         var worker = typeof(Handy.App).GetMethod("RunSpeculativePass", flags)!;
-        async Task Pass() => await (Task)worker.Invoke(app, new object[] { asr, CancellationToken.None })!;
+        async Task Pass() => await (Task)worker.Invoke(app, new object[] { asr, CancellationToken.None, false })!;
         await Pass();
         pcm.Write(new byte[3 * 16000 * 2]);
         await Pass();
@@ -308,7 +308,7 @@ static class PerformanceChecks
             var audio = new float[ms * 16];
             var analysis = vad.Analyze(audio, 0.3, 500);
             var decision = SpeculativeCachePolicy.Decide(16000 + audio.Length, 16000, analysis, settings);
-            Check(ms < 64 ? decision == SpeculativeCachePolicy.Decision.ColdPass : decision == SpeculativeCachePolicy.Decision.UsePrefixOnly, "actual silence policy " + ms);
+            Check(decision == SpeculativeCachePolicy.Decision.UsePrefixOnly, "actual silence policy " + ms);
             Console.WriteLine($"silenceTailMs={ms} status={analysis.Status} preservedSamples={analysis.Samples.Length} decision={decision}");
         }
         var samples = ReadWav(wav);

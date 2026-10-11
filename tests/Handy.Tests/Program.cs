@@ -347,6 +347,11 @@ static void AssertSpeculativeCachePolicy()
         "spec policy: explicit silence uses prefix despite preserved audio");
     AssertEqual(SpeculativeCachePolicy.Decision.UsePrefixOnly,
         SpeculativeCachePolicy.Decide(96000, 96000, null, s), "spec policy: exact snapshot");
+    AssertEqual(SpeculativeCachePolicy.Decision.UsePrefixOnly,
+        SpeculativeCachePolicy.Decide(97000, 96000, null, s), "spec policy: sub-frame tail is post-roll jitter");
+    AssertEqual(SpeculativeCachePolicy.Decision.UsePrefixOnly,
+        SpeculativeCachePolicy.Decide(97000, 96000, Tail(1000, SileroVadService.SpeechStatus.Uncertain), s),
+        "spec policy: sub-frame tail even when VAD could not frame it");
     AssertEqual(SpeculativeCachePolicy.Decision.UsePrefixPlusTail,
         SpeculativeCachePolicy.Decide(128000, 96000, Tail(32000, SileroVadService.SpeechStatus.Speech), s),
         "spec policy: substantial speech tail");

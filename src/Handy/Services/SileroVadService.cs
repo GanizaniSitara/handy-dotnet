@@ -143,9 +143,12 @@ public sealed class SileroVadService : IDisposable
         {
             var sample = string.Join(",", sampledProbs.Select(p => p.ToString("F3")));
             Log.Info($"VAD: no speech detected (threshold={threshold:F2}, maxProb={maxProb:F3}, first20=[{sample}]); passing audio through.");
-            // Only near-digital silence is safe to discard without a quiet-word
-            // accuracy corpus. No detected speech in energetic audio is uncertain.
-            var silence = maxProb < 0.1f && samples.All(v => Math.Abs(v) <= 1f / 32768);
+            // A live microphone never produces digital silence, so the verdict
+            // has to come from the model: a tail whose best frame sits well
+            // under the speech threshold is silence (room noise, breath). Only a
+            // tail with a borderline frame stays Uncertain, which the cache
+            // policy treats as "decode everything again".
+            var silence = maxProb < threshold / 3;
             return new(samples, silence ? SpeechStatus.Silence : SpeechStatus.Uncertain, maxProb);
         }
 

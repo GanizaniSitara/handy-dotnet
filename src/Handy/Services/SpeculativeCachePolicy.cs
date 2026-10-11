@@ -13,7 +13,10 @@ public static class SpeculativeCachePolicy
     {
         if (!settings.BackgroundRecognitionEnabled || snapshotSamples <= 0 || finalSamples < snapshotSamples)
             return Decision.ColdPass;
-        if (finalSamples == snapshotSamples || tail?.Status == SileroVadService.SpeechStatus.Silence)
+        // A tail shorter than the VAD can even frame (post-roll jitter) carries
+        // no word of its own; the prefix already covers the utterance.
+        if (finalSamples - snapshotSamples <= SilenceFloorSamples ||
+            tail?.Status == SileroVadService.SpeechStatus.Silence)
             return Decision.UsePrefixOnly;
         if (tail is null || tail.Status == SileroVadService.SpeechStatus.Uncertain ||
             tail.Samples.Length < MinReliableTailSamples)
@@ -21,6 +24,7 @@ public static class SpeculativeCachePolicy
         return Decision.UsePrefixPlusTail;
     }
     private const int MinReliableTailSamples = 16000 / 2; // 500 ms
+    private const int SilenceFloorSamples = 16000 / 10;   // 100 ms
 
     public enum Decision
     {

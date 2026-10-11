@@ -722,7 +722,29 @@ public partial class App : Application
         _ = Task.Run(() => RunSpeculativePass(asr, token));
     }
 
-    private async Task RunSpeculativePass(ITranscriptionService asr, CancellationToken token)
+    // Hotkey release. The post-roll still has to elapse before the final buffer
+    // is latched, but nothing stops us decoding what has already been captured
+    // during that wait. Once the post-roll lands, the normal cache policy sees
+    // a ~200 ms tail: silent (the usual case) and the prefix is the transcript,
+    // speech and only the tail is decoded. Either way the post-roll stops being
+    // dead time on the critical path.
+    private Task? StartReleasePass()
+    {
+        if (!_settings.BackgroundRecognitionEnabled || _settings.PostRollMs <= 0) return null;
+        var asr = _asr;
+        if (asr is null || !asr.IsReady) return null;
+        var cts = _specCts;
+        if (cts is null || cts.IsCancellationRequested) return null;
+        // A pause-triggered pass is already running: its prefix is what the
+        // final policy will build on, and a second snapshot would only queue
+        // behind it.
+        if (Interlocked.CompareExchange(ref _specInFlight, 1, 0) != 0) return null;
+        return Task.Run(() => RunSpeculativePass(asr, cts.Token, release: true));
+    }
+
+    private const int ReleaseMinNewSamples = 16000 * 3 / 10; // 300 ms
+
+    private async Task RunSpeculativePass(ITranscriptionService asr, CancellationToken token, bool release = false)
     {
         try
         {
@@ -730,8 +752,10 @@ public partial class App : Application
             // Need at least minNewSpeechMs of additional audio since last snapshot
             // to justify spending another ASR cycle. Check the cheap sample count
             // BEFORE paying for SnapshotCurrentRecording's full-buffer copy, so a
-            // pass that's going to bail out here costs nothing.
-            var minNewSamples = _settings.BackgroundMinNewSpeechMs * 16;
+            // pass that's going to bail out here costs nothing. At release the
+            // bar is lower: a pause pass that finished moments ago already covers
+            // the utterance, anything beyond that is worth decoding now.
+            var minNewSamples = release ? ReleaseMinNewSamples : _settings.BackgroundMinNewSpeechMs * 16;
             if (_audio.RecordingSampleCount - _lastSpecSnapshotSamples < minNewSamples) return;
             if (token.IsCancellationRequested) return;
 
@@ -739,7 +763,7 @@ public partial class App : Application
             await _asrGate.WaitAsync(token).ConfigureAwait(false);
             try
             {
-                if (token.IsCancellationRequested || !_recording) return;
+                if (token.IsCancellationRequested || (!_recording && !release)) return;
                 var prefix = _specCache;
                 var start = prefix is null ? 0 : Math.Max(0, prefix.SnapshotSamples - TailLookbackSamples);
                 var snapshot = _audio.SnapshotCurrentRecording(start);
@@ -756,6 +780,15 @@ public partial class App : Application
                     forAsr = analysis.Samples;
                 }
                 if (forAsr.Length < 16000 / 4) return;
+                if (release)
+                {
+                    // Give the decoder the same trailing quiet the cold pass
+                    // would have seen after the post-roll, so a final word
+                    // right at the release point is not cut short.
+                    var padded = new float[forAsr.Length + _settings.PostRollMs * 16];
+                    forAsr.CopyTo(padded, 0);
+                    forAsr = padded;
+                }
                 var sw = Stopwatch.StartNew();
                 var decoded = await asr.TranscribeAsync(forAsr, CreateTranscriptionOptions(_settings)).ConfigureAwait(false);
                 if (token.IsCancellationRequested) return;
@@ -766,7 +799,7 @@ public partial class App : Application
                 if (string.IsNullOrWhiteSpace(decoded)) return;
                 _specCompletedCount++;
                 _specCache = new SpeculativeResult(rawText, snapshotSamples, forAsr.Length, Stopwatch.GetTimestamp());
-                Log.Info($"Spec: snapshotSamples={snapshotSamples} newAsrSamples={forAsr.Length} asrMs={sw.ElapsedMilliseconds} rawLen={rawText.Length}");
+                Log.Info($"Spec: snapshotSamples={snapshotSamples} newAsrSamples={forAsr.Length} asrMs={sw.ElapsedMilliseconds} rawLen={rawText.Length} release={release}");
             }
             finally
             {
@@ -803,11 +836,17 @@ public partial class App : Application
 
         var stopSw = Stopwatch.StartNew();
         float[] samples;
+        Task? releasePass = null;
         try
         {
             SetUiState(isRecording: false, isTranscribing: true, hideOverlay: false);
             _session?.SetPhase(SessionPhase.Stopping);
-            samples = await _audio!.StopAsync(_settings.PostRollMs).ConfigureAwait(false);
+            // Start the post-roll timer first, then decode the audio captured so
+            // far while it runs. The snapshot is taken inside the pass, before
+            // StopAsync latches and resets the buffer.
+            var stopTask = _audio!.StopAsync(_settings.PostRollMs);
+            releasePass = StartReleasePass();
+            samples = await stopTask.ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -879,6 +918,10 @@ public partial class App : Application
             string raw;
             _session?.SetPhase(SessionPhase.AsrWait);
             var gateTimer = Stopwatch.StartNew();
+            // The release pass writes the prefix cache before it lets go of the
+            // gate; waiting on it here makes the ordering explicit instead of
+            // relying on it having reached the gate first.
+            if (releasePass is not null) await releasePass.ConfigureAwait(false);
             await _asrGate.WaitAsync().ConfigureAwait(false);
             try
             {
@@ -915,8 +958,7 @@ public partial class App : Application
                         // Preserve the 800 ms overlap and quiet word releases.
                         // Do not scan the already-analyzed tail again.
                     }
-                    else if (tail?.Status != SileroVadService.SpeechStatus.Uncertain &&
-                             _settings.VadEnabled && _vad?.IsReady == true)
+                    else if (_settings.VadEnabled && _vad?.IsReady == true)
                         samples = _vad.Trim(rawCaptureSamples, _settings.VadThreshold, _settings.VadPaddingMs);
                     vadMs = vadTimer.ElapsedMilliseconds;
                     vadOutCount = samples.Length;
