@@ -99,7 +99,9 @@ public partial class MainWindow : Window
         var selectedBackend = ComboContent(TranscriptionBackendCombo, _settings?.TranscriptionBackend ?? active.Backend);
         var selectedWhisperModel = ComboContent(WhisperModelCombo, _settings?.WhisperModel ?? "base");
         var selectedParakeetVariant = ComboContent(ParakeetVariantCombo, _settings?.ParakeetVariant ?? "Auto");
-        var pending = app.DescribeModelSelection(selectedBackend, selectedWhisperModel, selectedParakeetVariant);
+        var selectedProcessor = ComboContent(ProcessorCombo, App.NormalizeExecutionProvider(_settings?.ParakeetExecutionProvider));
+        var pending = app.DescribeModelSelection(selectedBackend, selectedWhisperModel, selectedParakeetVariant, selectedProcessor);
+        var gpuModelMissing = selectedProcessor == "GPU" && !app.HasGpuModel(selectedParakeetVariant);
 
         ActiveModelSummaryText.Text = $"{active.ModelName} ({active.Backend})";
         ActiveModelStatusText.Text = app.IsModelLoading ? "Loading - dictation will be available shortly" : active.IsReady
@@ -114,14 +116,23 @@ public partial class MainWindow : Window
             string.Equals(active.Path, pending.Path, StringComparison.OrdinalIgnoreCase);
 
         PendingModelSummaryText.Text = $"{pending.ModelName} ({pending.Backend})";
-        PendingModelStatusText.Text = pending.IsReady
-            ? selectionMatchesActive
-                ? "Already active"
-                : "Ready - click Apply to switch"
-            : "Missing - download this model before applying";
-        PendingModelStatusText.Foreground = pending.IsReady
-            ? selectionMatchesActive ? Brushes.ForestGreen : Brushes.DarkOrange
-            : Brushes.Firebrick;
+        if (_gpuDownloadRunning) { /* progress text owns the status line */ }
+        else if (gpuModelMissing && !string.Equals(pending.Backend, "Whisper", StringComparison.OrdinalIgnoreCase))
+        {
+            PendingModelStatusText.Text = "GPU model not downloaded - click Apply to download it (about 2.5 GB)";
+            PendingModelStatusText.Foreground = Brushes.DarkOrange;
+        }
+        else
+        {
+            PendingModelStatusText.Text = pending.IsReady
+                ? selectionMatchesActive
+                    ? "Already active"
+                    : "Ready - click Apply to switch"
+                : "Missing - download this model before applying";
+            PendingModelStatusText.Foreground = pending.IsReady
+                ? selectionMatchesActive ? Brushes.ForestGreen : Brushes.DarkOrange
+                : Brushes.Firebrick;
+        }
         PendingModelPathText.Text = pending.Path;
 
         var whisperSelected = string.Equals(pending.Backend, "Whisper", StringComparison.OrdinalIgnoreCase);
@@ -133,6 +144,14 @@ public partial class MainWindow : Window
         WhisperCarryPromptCheck.Opacity = whisperSelected ? 1.0 : 0.55;
         ParakeetVariantCombo.IsEnabled = !whisperSelected;
         ParakeetVariantCombo.Opacity = whisperSelected ? 0.55 : 1.0;
+        ProcessorCombo.IsEnabled = !whisperSelected && !_gpuDownloadRunning;
+        ProcessorCombo.Opacity = whisperSelected ? 0.55 : 1.0;
+        if (ProcessorHint is not null)
+        {
+            ProcessorHint.Text = whisperSelected
+                ? "CPU or GPU applies to Parakeet. Whisper always runs on the CPU here."
+                : "GPU is several times faster on long dictations and frees the CPU. It works on any DirectX 12 graphics card with nothing to install. If the card is unavailable, Handy.NET falls back to the CPU on its own; the Status line above says where it is really running.";
+        }
 
         // The biasing control was already greyed out for non-Whisper backends,
         // but nothing said why, and nothing said that Domain Terms still work
@@ -218,6 +237,7 @@ public partial class MainWindow : Window
 
             SelectComboByContent(TranscriptionBackendCombo, _settings.TranscriptionBackend);
             SelectComboByContent(ParakeetVariantCombo, App.NormalizeParakeetVariant(_settings.ParakeetVariant));
+            SelectComboByContent(ProcessorCombo, App.NormalizeExecutionProvider(_settings.ParakeetExecutionProvider));
             SelectComboByContent(WhisperModelCombo, WhisperTranscriptionService.NormalizeModelName(_settings.WhisperModel));
             WhisperPromptCheck.IsChecked = _settings.WhisperVocabularyPromptEnabled;
             WhisperCarryPromptCheck.IsChecked = _settings.WhisperCarryInitialPrompt;
@@ -342,8 +362,16 @@ public partial class MainWindow : Window
         _settings.WhisperModel = (string?)((ComboBoxItem)WhisperModelCombo.SelectedItem)?.Content ?? "base";
         _settings.WhisperVocabularyPromptEnabled = WhisperPromptCheck.IsChecked == true;
         _settings.WhisperCarryInitialPrompt = WhisperCarryPromptCheck.IsChecked == true;
+        _settings.ParakeetExecutionProvider = App.NormalizeExecutionProvider(ComboContent(ProcessorCombo, "CPU"));
 
-        ((App)Application.Current).ReloadSettings();
+        var app = (App)Application.Current;
+        app.ReloadSettings();
+        // GPU chosen but its model is not on disk yet: keep dictating on the
+        // CPU model, fetch the GPU one in the background, then switch.
+        if (_settings.ParakeetExecutionProvider == "GPU" && !_gpuDownloadRunning &&
+            !string.Equals(_settings.TranscriptionBackend?.Trim(), "Whisper", StringComparison.OrdinalIgnoreCase) &&
+            !app.HasGpuModel(_settings.ParakeetVariant))
+            _ = DownloadGpuModelThenSwitchAsync(app);
         RefreshModelStatus();
         Log.Info("Settings applied.");
         ShowSaveStatus($"Saved at {DateTime.Now:HH:mm:ss}");
@@ -483,6 +511,42 @@ public partial class MainWindow : Window
         PanelModels.Visibility   = NavModels.IsChecked   == true ? Visibility.Visible : Visibility.Collapsed;
         PanelLog.Visibility      = NavLog.IsChecked      == true ? Visibility.Visible : Visibility.Collapsed;
         RenderLog();
+    }
+
+    private bool _gpuDownloadRunning;
+
+    private async System.Threading.Tasks.Task DownloadGpuModelThenSwitchAsync(App app)
+    {
+        _gpuDownloadRunning = true;
+        var variant = app.GpuDownloadVariant(_settings.ParakeetVariant);
+        var progress = new Progress<ModelDownloadService.Progress>(p =>
+        {
+            var mb = p.TotalBytes.HasValue
+                ? $"{p.BytesSoFar / (1024.0 * 1024.0):F0} / {p.TotalBytes.Value / (1024.0 * 1024.0):F0} MB"
+                : $"{p.BytesSoFar / (1024.0 * 1024.0):F0} MB";
+            PendingModelStatusText.Text = $"{p.Phase}: {mb}. Dictation keeps working on the CPU meanwhile.";
+            PendingModelStatusText.Foreground = Brushes.DarkOrange;
+        });
+        try
+        {
+            await ModelDownloadService.DownloadGpuAsync(app.ModelsRoot, variant, progress,
+                System.Threading.CancellationToken.None);
+            _gpuDownloadRunning = false;
+            // Same settings, but the GPU directory now resolves: this reloads
+            // the model onto the GPU.
+            app.ReloadSettings();
+            PendingModelStatusText.Text = "GPU model installed - switching now";
+            PendingModelStatusText.Foreground = Brushes.ForestGreen;
+        }
+        catch (Exception ex)
+        {
+            _gpuDownloadRunning = false;
+            PendingModelStatusText.Text = $"GPU model download failed: {ex.Message}. Click Apply to retry.";
+            PendingModelStatusText.Foreground = Brushes.Firebrick;
+            Log.Error($"GPU model download failed: {ex}");
+            return;
+        }
+        RefreshModelStatus();
     }
 
     private async void OnDownloadModel(object sender, RoutedEventArgs e)

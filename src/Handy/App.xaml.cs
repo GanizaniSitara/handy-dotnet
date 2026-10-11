@@ -31,6 +31,7 @@ public partial class App : Application
     private string                   _parakeetModelDir = string.Empty;
     private string                   _activeBackend = "Parakeet";
     private string                   _activeWhisperModel = "base";
+    private string                   _activeProvider = "CPU";
 
     private SessionTracker?          _session;
 
@@ -205,6 +206,7 @@ public partial class App : Application
 
         _activeBackend = NormalizeBackend(_settings.TranscriptionBackend);
         _activeWhisperModel = WhisperTranscriptionService.NormalizeModelName(_settings.WhisperModel);
+        _activeProvider = NormalizeExecutionProvider(_settings.ParakeetExecutionProvider);
         _modelLoading = true;
         _audio = new AudioCaptureService(_settings.MicrophoneDeviceName);
         _audio.OnLevels += levels => _overlay?.SetLevels(levels);
@@ -298,8 +300,7 @@ public partial class App : Application
             ParakeetEncoderThreads = _settings.ParakeetEncoderThreads,
             ParakeetPrioritizeInference = _settings.ParakeetPrioritizeInference,
             ParakeetExecutionProvider = _settings.ParakeetExecutionProvider,
-            ParakeetCudaDeviceId = _settings.ParakeetCudaDeviceId,
-            ParakeetCudaLibraryDir = _settings.ParakeetCudaLibraryDir,
+            ParakeetGpuDeviceId = _settings.ParakeetGpuDeviceId,
         };
         var modelDir = _parakeetModelDir;
         _modelLoading = true;
@@ -1407,9 +1408,12 @@ public partial class App : Application
         _settings.WhisperModel = whisperModel;
         _settings.ParakeetVariant = variant;
 
-        var newParakeetDir = ResolveModelDir(_dataDir, variant, _settings.ParakeetExecutionProvider);
+        var provider = NormalizeExecutionProvider(_settings.ParakeetExecutionProvider);
+        _settings.ParakeetExecutionProvider = provider;
+        var newParakeetDir = ResolveModelDir(_dataDir, variant, provider);
 
         if (string.Equals(backend, _activeBackend, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(provider, _activeProvider, StringComparison.OrdinalIgnoreCase) &&
             string.Equals(whisperModel, _activeWhisperModel, StringComparison.OrdinalIgnoreCase) &&
             string.Equals(newParakeetDir, _parakeetModelDir, StringComparison.OrdinalIgnoreCase))
         {
@@ -1425,6 +1429,7 @@ public partial class App : Application
         _parakeetModelDir = newParakeetDir;
         _activeBackend = backend;
         _activeWhisperModel = whisperModel;
+        _activeProvider = provider;
         QueueModelLoad("model-change");
         Log.Info($"Transcription backend switched to {_activeBackend} ({DescribeActiveModelPath(_settings, _dataDir, _parakeetModelDir)})");
     }
@@ -1439,14 +1444,35 @@ public partial class App : Application
             return new ModelRuntimeStatus("Whisper", $"Whisper {modelName}", path, _asr?.IsReady == true);
         }
 
+        // Report where the encoder really runs, not what was asked for: a GPU
+        // request that fell back is shown as CPU.
+        var runsOn = (_asr as ParakeetTranscriptionService)?.ExecutionProvider ?? "CPU";
         return new ModelRuntimeStatus(
             "Parakeet",
-            DescribeParakeetModelName(_parakeetModelDir),
+            $"{DescribeParakeetModelName(_parakeetModelDir)} on {runsOn}",
             _parakeetModelDir,
             _asr?.IsReady == true);
     }
 
-    internal ModelRuntimeStatus DescribeModelSelection(string backend, string whisperModel, string parakeetVariant)
+    /// <summary>Which Parakeet generation a GPU download should fetch: the
+    /// forced variant, or for Auto whichever CPU model is in use now.</summary>
+    internal ModelDownloadService.Variant GpuDownloadVariant(string parakeetVariant) =>
+        NormalizeParakeetVariant(parakeetVariant) switch
+        {
+            "V3" => ModelDownloadService.Variant.V3,
+            "V2" => ModelDownloadService.Variant.V2,
+            _ => DescribeParakeetModelName(ResolveModelDir(_dataDir, parakeetVariant, "CPU")).Contains("V3")
+                ? ModelDownloadService.Variant.V3 : ModelDownloadService.Variant.V2,
+        };
+
+    /// <summary>True when the GPU build for this variant choice is on disk.</summary>
+    internal bool HasGpuModel(string parakeetVariant) =>
+        ParakeetTranscriptionService.HasFp32Models(ResolveModelDir(_dataDir, parakeetVariant, "GPU"));
+
+    internal string ModelsRoot => Path.Combine(_dataDir, "models");
+
+    internal ModelRuntimeStatus DescribeModelSelection(string backend, string whisperModel, string parakeetVariant,
+        string? processor = null)
     {
         backend = NormalizeBackend(backend);
         if (string.Equals(backend, "Whisper", StringComparison.OrdinalIgnoreCase))
@@ -1456,10 +1482,12 @@ public partial class App : Application
             return new ModelRuntimeStatus("Whisper", $"Whisper {modelName}", path, File.Exists(path));
         }
 
-        var parakeetModelDir = ResolveModelDir(_dataDir, parakeetVariant, _settings.ParakeetExecutionProvider);
+        var wantGpu = NormalizeExecutionProvider(processor ?? _settings.ParakeetExecutionProvider) == "GPU";
+        var parakeetModelDir = ResolveModelDir(_dataDir, parakeetVariant, wantGpu ? "GPU" : "CPU");
+        var onGpu = wantGpu && ParakeetTranscriptionService.HasFp32Models(parakeetModelDir);
         return new ModelRuntimeStatus(
             "Parakeet",
-            DescribeParakeetModelName(parakeetModelDir),
+            $"{DescribeParakeetModelName(parakeetModelDir)} on {(onGpu ? "GPU" : "CPU")}",
             parakeetModelDir,
             HasParakeetAssets(parakeetModelDir));
     }
@@ -1721,9 +1749,8 @@ public partial class App : Application
     internal static string NormalizeExecutionProvider(string? p) =>
         (p ?? string.Empty).Trim().ToUpperInvariant() switch
         {
-            "CPU" => "CPU",
-            "CUDA" => "CUDA",
-            _ => "Auto",
+            "GPU" or "DIRECTML" or "CUDA" => "GPU",
+            _ => "CPU",
         };
 
     private static string ResolveModelDir(string dataDir, string preferredVariant, string? executionProvider = "CPU")
@@ -1827,24 +1854,18 @@ public partial class App : Application
         }
 
         var threads = Math.Clamp(settings.ParakeetEncoderThreads, 1, Environment.ProcessorCount);
-        var provider = NormalizeExecutionProvider(settings.ParakeetExecutionProvider);
-        // Auto means: try the GPU when an fp32 directory was selected for it.
-        var tryCuda = provider == "CUDA" ||
-                      (provider == "Auto" && ParakeetTranscriptionService.HasFp32Models(parakeetModelDir)
-                                          && !ParakeetTranscriptionService.HasInt8Models(parakeetModelDir));
-        if (tryCuda)
+        if (NormalizeExecutionProvider(settings.ParakeetExecutionProvider) == "GPU"
+            && ParakeetTranscriptionService.HasFp32Models(parakeetModelDir))
         {
             var gpu = new ParakeetTranscriptionService(parakeetModelDir,
                 encoderThreads: threads, prioritizeInference: settings.ParakeetPrioritizeInference,
-                executionProvider: "CUDA", cudaDeviceId: settings.ParakeetCudaDeviceId,
-                cudaLibraryDir: settings.ParakeetCudaLibraryDir);
-            if (gpu.IsReady && gpu.ExecutionProvider == "CUDA") return gpu;
-            // The fp32 encoder on a CPU is several times slower than int8, so a
-            // failed CUDA load goes back to whatever int8 directory exists
-            // rather than limping along with the fp32 one.
+                executionProvider: "GPU", gpuDeviceId: settings.ParakeetGpuDeviceId);
+            if (gpu.IsReady && gpu.ExecutionProvider == "GPU") return gpu;
+            // The fp32 encoder on a CPU is no faster than int8 and four times
+            // the memory, so a failed GPU load goes back to the CPU model.
             gpu.Dispose();
             var cpuDir = ResolveModelDir(dataDir, settings.ParakeetVariant, "CPU");
-            Log.Warn($"CUDA unavailable; loading CPU model from {cpuDir}");
+            Log.Warn($"GPU unavailable; loading CPU model from {cpuDir}");
             parakeetModelDir = cpuDir;
         }
         return new ParakeetTranscriptionService(parakeetModelDir,

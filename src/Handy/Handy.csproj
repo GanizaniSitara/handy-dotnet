@@ -19,9 +19,11 @@
 
   <ItemGroup>
     <PackageReference Include="NAudio" Version="2.2.1" />
-    <!-- The Gpu package is the CPU package plus the CUDA provider. CUDA is only
-         used when the runtime DLLs are found at startup; otherwise it is plain CPU. -->
-    <PackageReference Include="Microsoft.ML.OnnxRuntime.Gpu" Version="1.20.1" />
+    <!-- The DirectML build is the CPU build plus Windows' own GPU layer: any
+         DirectX 12 adapter, nothing extra to install. On a machine without one
+         it behaves exactly like the CPU package. -->
+    <PackageReference Include="Microsoft.ML.OnnxRuntime.DirectML" Version="1.20.1" />
+    <PackageReference Include="Microsoft.AI.DirectML" Version="1.15.2" GeneratePathProperty="true" />
     <PackageReference Include="Whisper.net" Version="1.9.0" />
     <PackageReference Include="Whisper.net.Runtime" Version="1.9.0" />
   </ItemGroup>
@@ -29,6 +31,11 @@
   <ItemGroup>
     <None Include="..\..\docs\help.md" Link="docs\help.md" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\..\docs\domain-terms.md" Link="docs\domain-terms.md" CopyToOutputDirectory="PreserveNewest" />
+    <!-- Microsoft.AI.DirectML only copies its DLL for x64-platform builds; this
+         project is AnyCPU. Without the redistributable beside onnxruntime.dll,
+         Windows loads the ancient System32 DirectML.dll and every adapter
+         reports "feature level not supported". -->
+    <None Include="$(PkgMicrosoft_AI_DirectML)\bin\x64-win\DirectML.dll" Link="DirectML.dll" CopyToOutputDirectory="PreserveNewest" Visible="false" />
   </ItemGroup>
 
   <!-- Whisper.net.Runtime stages its native whisper.cpp DLLs for every Windows

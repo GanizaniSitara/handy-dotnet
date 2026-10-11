@@ -647,6 +647,23 @@
                                         <ColumnDefinition Width="*"/>
                                         <ColumnDefinition Width="140"/>
                                     </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="Run on" Style="{StaticResource Text.SettingLabel}"
+                                               ToolTip="GPU runs Parakeet on your graphics card (NVIDIA, AMD or Intel, through DirectX 12). Nothing to install; Apply downloads the GPU model the first time."/>
+                                    <ComboBox Grid.Column="1" x:Name="ProcessorCombo" SelectionChanged="OnModelSelectionChanged">
+                                        <ComboBoxItem Content="CPU"/>
+                                        <ComboBoxItem Content="GPU"/>
+                                    </ComboBox>
+                                </Grid>
+                            </Border>
+                            <Border Style="{StaticResource SettingsRow}">
+                                <TextBlock x:Name="ProcessorHint" Style="{StaticResource Text.Hint}" TextWrapping="Wrap"/>
+                            </Border>
+                            <Border Style="{StaticResource SettingsRow}">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="140"/>
+                                    </Grid.ColumnDefinitions>
                                     <TextBlock Grid.Column="0" Text="Whisper model" Style="{StaticResource Text.SettingLabel}"/>
                                     <ComboBox Grid.Column="1" x:Name="WhisperModelCombo" SelectionChanged="OnModelSelectionChanged">
                                         <ComboBoxItem Content="tiny.en"/>
