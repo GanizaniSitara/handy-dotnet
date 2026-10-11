@@ -360,3 +360,36 @@ Hotkey follow-up: WH_KEYBOARD_LL previously ran on the WPF dispatcher and perfor
 Live CPU utilization reached 100% with 33.5 GiB available memory. A 29.25-second recording required 4214 ms ASR, including 3603 ms encoder time; gate/dispatch waits and GC pauses were negligible. Another recording logged 20.4 seconds held but 16.85 seconds captured, then an empty transcript. This suggests capture loss or delayed delivery, but does not establish its cause.
 
 The microphone previously used NAudio's default three buffers at 50 ms each, only 150 ms reserve. The candidate uses twenty buffers (one second reserve) while retaining 50 ms delivery granularity. Each recording now logs actual capture elapsed time, live audio duration excluding pre-roll, shortfall and maximum callback gap. Extra reserve is a mitigation to validate under real contention, not proof of lossless capture. Release build and all three regression suites pass. Rollback files are in `artifacts/dct-038/rollback-before-capture-reserve`.
+
+## Review follow-up — post-roll race and silent-tail verdict (11 October 2026, later)
+
+Two findings from reading the 11 October `Diag:` / `Flow:` lines against the code:
+
+1. **The silence verdict never fired on a real microphone.** `SileroVadService.Analyze`
+   returned `Silence` only when every sample was digital zero. Mic noise is never
+   zero, so every silent tail after a speculative snapshot came back `Uncertain`,
+   the cache policy forced a cold pass, and the cold pass also skipped VAD trimming
+   of the whole clip. Example at 16:20:14: a 29.25 s recording whose prefix was
+   fully decoded, 4 s tail with VAD maxProb 0.075, decision `ColdPass` on all
+   468 000 untrimmed samples, `asrMs=4214`. With the prefix it would have been
+   roughly zero. Silence is now "best VAD frame under a third of the speech
+   threshold"; the quiet-speech benchmark (JFK at -46 dB) still scores 0.56 and
+   stays `Speech`. Cold passes always trim. A tail of 100 ms or less is treated
+   as post-roll jitter and uses the prefix regardless.
+
+2. **The 200 ms post-roll was dead time.** `stopMs` was 202-240 ms on every one of
+   today's dictations and nothing ran during it. On hotkey release a speculative
+   pass now snapshots the buffer so far, pads it with the post-roll's worth of
+   zeros, and decodes while the post-roll elapses. After the latch the usual
+   policy sees a ~200 ms tail: silent in the normal case, so the prefix is the
+   transcript and the only wait is whatever is left of that decode; speech if the
+   user released mid-word, in which case the tail is decoded as before. Expected
+   effect for a short dictation: total drops by about the post-roll, roughly
+   from 450-650 ms to 250-450 ms. Measure with the `Diag:` line (`specPrefix=true`
+   and `stopMs` no longer preceding `asrMs`) and the new `release=true` field on
+   `Spec:` lines.
+
+Not done, needs a decision: both RTX 3090s sit idle while the encoder burns
+2.7 CPU-seconds per 3 s clip on a saturated CPU. ONNX Runtime CUDA or DirectML
+execution would make the encoder roughly length-independent, but needs a package
+change, an fp16/fp32 model variant, and a CPU fallback for the work laptop.
