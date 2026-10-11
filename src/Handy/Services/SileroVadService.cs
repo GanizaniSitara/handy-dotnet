@@ -21,6 +21,8 @@ namespace Handy.Services;
 /// </summary>
 public sealed class SileroVadService : IDisposable
 {
+    public enum SpeechStatus { Uncertain, Speech, Silence }
+    public sealed record Analysis(float[] Samples, SpeechStatus Status, float MaxProbability);
     private const int SampleRate = 16000;
     private const int FrameSize  = 512;
     private const int ContextSize = 64;   // 16 kHz context window prepended to each frame (Silero v5)
@@ -69,14 +71,20 @@ public sealed class SileroVadService : IDisposable
     /// through to the next speech burst (preserving Trim's "edges only" semantic).
     /// </summary>
     public float[] Trim(float[] samples, double threshold = 0.5, int paddingMs = 200, int trailingHangoverMs = 480)
+        => Analyze(samples, threshold, paddingMs, trailingHangoverMs).Samples;
+
+    // Audio preservation and speech detection are separate contracts. In
+    // particular, an uncertain/quiet clip must never masquerade as an empty tail.
+    public Analysis Analyze(float[] samples, double threshold = 0.5, int paddingMs = 200, int trailingHangoverMs = 480)
     {
-        if (_session is null || samples.Length < FrameSize * 2) return samples;
+        if (_session is null || samples.Length < FrameSize * 2)
+            return new(samples, SpeechStatus.Uncertain, 0);
 
         var state = new float[2 * 1 * StateHidden];
         var context = new float[ContextSize]; // zero-initialised for first frame
         int firstSpeechFrame = -1;
         int lastSpeechFrame  = -1;
-        int frameCount = samples.Length / FrameSize;
+        int frameCount = (samples.Length + FrameSize - 1) / FrameSize;
         float maxProb = 0f;
         var sampledProbs = new List<float>(capacity: 20);
 
@@ -91,7 +99,9 @@ public sealed class SileroVadService : IDisposable
         {
             // Prepend the last 64 samples from the previous frame, then copy this frame's 512.
             Array.Copy(context, 0,             framedInput, 0,           ContextSize);
-            Array.Copy(samples, f * FrameSize, framedInput, ContextSize, FrameSize);
+            Array.Clear(framedInput, ContextSize, FrameSize);
+            Array.Copy(samples, f * FrameSize, framedInput, ContextSize,
+                Math.Min(FrameSize, samples.Length - f * FrameSize));
 
             var input = new DenseTensor<float>(framedInput, new[] { 1, ContextSize + FrameSize });
             var stIn  = new DenseTensor<float>(state,       new[] { 2, 1, StateHidden });
@@ -109,7 +119,7 @@ public sealed class SileroVadService : IDisposable
             state     = byName["stateN"].AsTensor<float>().ToArray();
 
             // Save the last 64 samples of this frame as context for the next call.
-            Array.Copy(samples, f * FrameSize + FrameSize - ContextSize, context, 0, ContextSize);
+            Array.Copy(framedInput, FrameSize, context, 0, ContextSize);
 
             if (prob > maxProb) maxProb = prob;
             if (f < 20) sampledProbs.Add(prob);
@@ -133,7 +143,10 @@ public sealed class SileroVadService : IDisposable
         {
             var sample = string.Join(",", sampledProbs.Select(p => p.ToString("F3")));
             Log.Info($"VAD: no speech detected (threshold={threshold:F2}, maxProb={maxProb:F3}, first20=[{sample}]); passing audio through.");
-            return samples;
+            // Only near-digital silence is safe to discard without a quiet-word
+            // accuracy corpus. No detected speech in energetic audio is uncertain.
+            var silence = maxProb < 0.1f && samples.All(v => Math.Abs(v) <= 1f / 32768);
+            return new(samples, silence ? SpeechStatus.Silence : SpeechStatus.Uncertain, maxProb);
         }
 
         var padSamples = Math.Max(0, paddingMs) * SampleRate / 1000;
@@ -141,12 +154,13 @@ public sealed class SileroVadService : IDisposable
         var endSample   = Math.Min(samples.Length, (lastSpeechFrame + 1) * FrameSize + padSamples);
         var trimmedLen  = endSample - startSample;
 
-        if (trimmedLen <= 0 || trimmedLen == samples.Length) return samples;
+        if (trimmedLen <= 0 || trimmedLen == samples.Length)
+            return new(samples, SpeechStatus.Speech, maxProb);
 
         var trimmed = new float[trimmedLen];
         Array.Copy(samples, startSample, trimmed, 0, trimmedLen);
         Log.Info($"VAD: trimmed {samples.Length} → {trimmedLen} samples ({startSample}..{endSample}; pad={paddingMs}ms, tailHangover={trailingHangoverMs}ms).");
-        return trimmed;
+        return new(trimmed, SpeechStatus.Speech, maxProb);
     }
 
     /// <summary>

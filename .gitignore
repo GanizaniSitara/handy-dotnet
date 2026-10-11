@@ -23,3 +23,6 @@ models/
 
 # Isolated build output used when the live Handy.exe locks bin/obj
 .artifacts/
+
+# Candidate builds and benchmark dumps (gigabytes of binaries)
+artifacts/

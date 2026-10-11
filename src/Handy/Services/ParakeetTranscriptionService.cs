@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
+using System.Threading;
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
 
@@ -26,6 +27,7 @@ public sealed class ParakeetTranscriptionService : ITranscriptionService
     private const int MaxSymbolsPerStep = 10;
     private const int SampleRate = 16000;
     private const int PreRollMs = 250;
+    private static readonly string[] DecoderOutputNames = { "outputs", "output_states_1", "output_states_2" };
 
     // Parakeet TDT also emits a duration head after the vocab logits. Upstream
     // transcribe-rs slices logits to vocab_size and advances one encoder frame
@@ -35,15 +37,21 @@ public sealed class ParakeetTranscriptionService : ITranscriptionService
     private readonly InferenceSession? _encoder;
     private readonly InferenceSession? _decoder;
     private readonly ParakeetTokenizer? _tok;
+    private readonly bool _prioritizeInference;
 
     // Decoder LSTM state shape, read from ONNX metadata at load time.
     private readonly int _stateLayers;
     private readonly int _stateHidden;
 
-    public bool IsReady => _preproc is not null && _encoder is not null && _decoder is not null && _tok is not null;
+    private int _disposed;
+    public bool IsReady => Volatile.Read(ref _disposed) == 0 && _preproc is not null && _encoder is not null && _decoder is not null && _tok is not null;
 
-    public ParakeetTranscriptionService(string modelDir)
+    // Optimized graphs are opt-in for the offline benchmark, never selected by
+    // the tray app until parity and cache compatibility have been established.
+    public ParakeetTranscriptionService(string modelDir, string? optimizedModelDir = null, bool loadOptimized = false,
+        int encoderThreads = 4, int auxiliaryThreads = 4, bool allowSpinning = true, bool prioritizeInference = false)
     {
+        _prioritizeInference = prioritizeInference;
         try
         {
             var preprocPath = Path.Combine(modelDir, "nemo128.onnx");
@@ -60,14 +68,14 @@ public sealed class ParakeetTranscriptionService : ITranscriptionService
                 }
             }
 
-            var opts = new SessionOptions
+            using var opts = new SessionOptions
             {
                 GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL,
                 InterOpNumThreads = 1,
                 // Pinned rather than 0 ("let ORT pick"): an unbounded IntraOp
                 // count multiplies the per-thread CPU arena below across every
                 // thread ORT spins up.
-                IntraOpNumThreads = 4,
+                IntraOpNumThreads = auxiliaryThreads,
                 // The CPU arena grows to the largest input it has ever seen and
                 // never releases it back to the OS. Each speculative pass feeds
                 // a longer prefix than the last, so over a long session the
@@ -76,15 +84,28 @@ public sealed class ParakeetTranscriptionService : ITranscriptionService
                 // session's high-water mark for its entire lifetime.
                 EnableCpuMemArena = false,
             };
+            opts.AddSessionConfigEntry("session.intra_op.allow_spinning", allowSpinning ? "1" : "0");
+            opts.AddSessionConfigEntry("session.inter_op.allow_spinning", allowSpinning ? "1" : "0");
+            Log.Info($"Session: Parakeet runtime encoderThreads={encoderThreads} auxiliaryThreads={auxiliaryThreads} spinning={allowSpinning} prioritizeInference={prioritizeInference}");
 
             var sw = Stopwatch.StartNew();
-            _preproc = new InferenceSession(preprocPath, opts);
+            InferenceSession Load(string path)
+            {
+                opts.IntraOpNumThreads = path == encoderPath ? encoderThreads : auxiliaryThreads;
+                if (optimizedModelDir is null) return new InferenceSession(path, opts);
+                Directory.CreateDirectory(optimizedModelDir);
+                var optimizedPath = Path.Combine(optimizedModelDir, Path.GetFileName(path));
+                opts.GraphOptimizationLevel = loadOptimized ? GraphOptimizationLevel.ORT_DISABLE_ALL : GraphOptimizationLevel.ORT_ENABLE_ALL;
+                opts.OptimizedModelFilePath = loadOptimized ? string.Empty : optimizedPath;
+                return new InferenceSession(loadOptimized ? optimizedPath : path, opts);
+            }
+            _preproc = Load(preprocPath);
             Log.Info($"Loaded preprocessor in {sw.ElapsedMilliseconds} ms");
             sw.Restart();
-            _encoder = new InferenceSession(encoderPath, opts);
+            _encoder = Load(encoderPath);
             Log.Info($"Loaded encoder in {sw.ElapsedMilliseconds} ms");
             sw.Restart();
-            _decoder = new InferenceSession(decoderPath, opts);
+            _decoder = Load(decoderPath);
             Log.Info($"Loaded decoder/joiner in {sw.ElapsedMilliseconds} ms");
 
             _tok = new ParakeetTokenizer(vocabPath);
@@ -104,16 +125,25 @@ public sealed class ParakeetTranscriptionService : ITranscriptionService
         }
         catch (Exception ex)
         {
+            Dispose();
             Log.Error($"Failed to load Parakeet models: {ex}");
         }
     }
 
     public Task<string> TranscribeAsync(float[] samples, TranscriptionOptions? options = null)
-        => Task.Run(() => Transcribe(samples));
+    {
+        var queued = Stopwatch.GetTimestamp();
+        return Task.Run(() =>
+        {
+            Log.Info($"Perf: stage=asr-dispatch queueMs={Stopwatch.GetElapsedTime(queued).TotalMilliseconds:F1}");
+            return Transcribe(samples);
+        });
+    }
 
     private string Transcribe(float[] samples)
     {
         if (!IsReady) throw new InvalidOperationException("Parakeet models not loaded.");
+        using var priority = _prioritizeInference ? new InferencePriorityScope() : null;
 
         // 250 ms of leading silence, matching transcribe-rs::audio::prepend_silence.
         var preRoll = SampleRate * PreRollMs / 1000;
@@ -121,6 +151,7 @@ public sealed class ParakeetTranscriptionService : ITranscriptionService
         samples.CopyTo(padded, preRoll);
 
         var total = Stopwatch.StartNew();
+        var preProbe = new PerformanceProbe();
 
         // 1) Preprocessor.
         var waveTensor = new DenseTensor<float>(padded, new[] { 1, padded.Length });
@@ -147,6 +178,8 @@ public sealed class ParakeetTranscriptionService : ITranscriptionService
         }
         Log.Info($"Preproc: {padded.Length} samples → features[1,{nMels},{nFrames}] in {total.ElapsedMilliseconds} ms");
 
+        preProbe.Finish("preprocessor");
+        var encoderProbe = new PerformanceProbe();
         // 2) Encoder.
         var encStart = total.ElapsedMilliseconds;
         var encInputs = new List<NamedOnnxValue>
@@ -172,6 +205,8 @@ public sealed class ParakeetTranscriptionService : ITranscriptionService
         }
         Log.Info($"Encoder: out[1,{dEnc},{tEnc}], encLen={encLen} in {total.ElapsedMilliseconds - encStart} ms");
 
+        encoderProbe.Finish("encoder");
+        var decoderProbe = new PerformanceProbe();
         // 3) Greedy RNN-T decode over vocab logits only, matching transcribe-rs.
         var decStart = total.ElapsedMilliseconds;
         var tokens = new List<int>(capacity: 256);
@@ -180,6 +215,17 @@ public sealed class ParakeetTranscriptionService : ITranscriptionService
         var state2 = new float[_stateLayers * 1 * _stateHidden];
         int lastToken = _tok!.BlankId;
         var frameSlice = new float[dEnc];
+        var targetBuffer = new int[1];
+        // These buffers belong to this transcription. Run is synchronous, so
+        // the next step can reuse them after its output has been consumed.
+        var decIn = new List<NamedOnnxValue>
+        {
+            NamedOnnxValue.CreateFromTensor("encoder_outputs", new DenseTensor<float>(frameSlice, new[] { 1, dEnc, 1 })),
+            NamedOnnxValue.CreateFromTensor("targets", new DenseTensor<int>(targetBuffer, new[] { 1, 1 })),
+            NamedOnnxValue.CreateFromTensor("target_length", new DenseTensor<int>(new[] { 1 }, new[] { 1 })),
+            NamedOnnxValue.CreateFromTensor("input_states_1", new DenseTensor<float>(state1, new[] { _stateLayers, 1, _stateHidden })),
+            NamedOnnxValue.CreateFromTensor("input_states_2", new DenseTensor<float>(state2, new[] { _stateLayers, 1, _stateHidden })),
+        };
 
         int t = 0;
         while (t < encLen)
@@ -193,30 +239,14 @@ public sealed class ParakeetTranscriptionService : ITranscriptionService
 
             while (true)
             {
-                var encFrame = new DenseTensor<float>(frameSlice, new[] { 1, dEnc, 1 });
-                var targets   = new DenseTensor<int>(new[] { lastToken }, new[] { 1, 1 });
-                var targetLen = new DenseTensor<int>(new[] { 1 }, new[] { 1 });
-                var inState1  = new DenseTensor<float>(state1, new[] { _stateLayers, 1, _stateHidden });
-                var inState2  = new DenseTensor<float>(state2, new[] { _stateLayers, 1, _stateHidden });
-
-                var decIn = new List<NamedOnnxValue>
-                {
-                    NamedOnnxValue.CreateFromTensor("encoder_outputs", encFrame),
-                    NamedOnnxValue.CreateFromTensor("targets",         targets),
-                    NamedOnnxValue.CreateFromTensor("target_length",   targetLen),
-                    NamedOnnxValue.CreateFromTensor("input_states_1",  inState1),
-                    NamedOnnxValue.CreateFromTensor("input_states_2",  inState2),
-                };
-
+                targetBuffer[0] = lastToken;
                 int token;
-                float[] newState1, newState2;
-                using (var decOut = _decoder!.Run(decIn))
+                using (var decOut = _decoder!.Run(decIn, DecoderOutputNames))
                 {
-                    var byName = decOut.ToDictionary(v => v.Name);
-                    var flat = byName["outputs"].AsTensor<float>().ToArray();
+                    var flat = decOut[0].AsTensor<float>();
 
                     int vs = _tok.VocabSize;
-                    int totalLogits = flat.Length;
+                    int totalLogits = checked((int)flat.Length);
                     int vocabLogits = Math.Min(vs, totalLogits);
 
                     // Argmax over vocab head.
@@ -224,11 +254,17 @@ public sealed class ParakeetTranscriptionService : ITranscriptionService
                     float bestTok = float.NegativeInfinity;
                     for (int i = 0; i < vocabLogits; i++)
                     {
-                        if (flat[i] > bestTok) { bestTok = flat[i]; token = i; }
+                        var value = flat.GetValue(i);
+                        if (value > bestTok) { bestTok = value; token = i; }
                     }
 
-                    newState1 = byName["output_states_1"].AsTensor<float>().ToArray();
-                    newState2 = byName["output_states_2"].AsTensor<float>().ToArray();
+                    // Blank must retain the previous LSTM state. It also needs
+                    // no state copies, which is most decoder steps.
+                    if (token != _tok.BlankId)
+                    {
+                        decOut[1].AsTensor<float>().ToDenseTensor().Buffer.Span.CopyTo(state1);
+                        decOut[2].AsTensor<float>().ToDenseTensor().Buffer.Span.CopyTo(state2);
+                    }
                 }
 
                 if (token == _tok.BlankId)
@@ -240,8 +276,6 @@ public sealed class ParakeetTranscriptionService : ITranscriptionService
                 }
 
                 // Non-blank: commit state, emit token.
-                state1 = newState1;
-                state2 = newState2;
                 lastToken = token;
                 tokens.Add(token);
                 emittedThisFrame++;
@@ -259,14 +293,49 @@ public sealed class ParakeetTranscriptionService : ITranscriptionService
         }
 
         var text = _tok.Decode(tokens);
+        decoderProbe.Finish("decoder");
         Log.Info($"Decode: {tokens.Count} tokens in {total.ElapsedMilliseconds - decStart} ms; total {total.ElapsedMilliseconds} ms");
         return text;
     }
 
     public void Dispose()
     {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
         _preproc?.Dispose();
         _encoder?.Dispose();
         _decoder?.Dispose();
+    }
+
+    // ORT's native workers inherit the process priority, not the managed
+    // caller's Thread.Priority. Limit the boost to the serialized decode.
+    private sealed class InferencePriorityScope : IDisposable
+    {
+        private readonly Process _process = Process.GetCurrentProcess();
+        private bool _changed;
+
+        public InferencePriorityScope()
+        {
+            try
+            {
+                if (_process.PriorityClass == ProcessPriorityClass.Normal)
+                {
+                    _process.PriorityClass = ProcessPriorityClass.AboveNormal;
+                    _changed = true;
+                }
+            }
+            catch (Exception ex) { Log.Info($"Perf: inference priority unavailable: {ex.Message}"); }
+        }
+
+        public void Dispose()
+        {
+            try
+            {
+                _process.Refresh();
+                if (_changed && _process.PriorityClass == ProcessPriorityClass.AboveNormal)
+                    _process.PriorityClass = ProcessPriorityClass.Normal;
+            }
+            catch (Exception ex) { Log.Warn($"Inference priority restore failed: {ex.Message}"); }
+            finally { _process.Dispose(); }
+        }
     }
 }

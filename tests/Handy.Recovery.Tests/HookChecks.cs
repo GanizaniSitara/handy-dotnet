@@ -1,10 +1,11 @@
 using System;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Threading;
+using System.Windows.Threading;
 using Handy.Services;
 
-// Exercise the real callback without installing a hook, injecting input,
-// creating a WPF Application, or changing focus/clipboard contents.
+// Callback tests inject no input and change no focus or clipboard contents.
 static class HookChecks
 {
     public static void Run()
@@ -46,6 +47,22 @@ static class HookChecks
             if (Key(0x56, false) != new IntPtr(1)) throw new Exception("retype key-up leaked after modifier release");
         }
         finally { Marshal.FreeHGlobal(buffer); }
+
+        // Empty chords: verify the actual message-thread lifecycle without
+        // swallowing any user's keys. No WPF Application is constructed.
+        var isolated = new LowLevelKeyHookService();
+        isolated.Install();
+        var flags = BindingFlags.Instance | BindingFlags.NonPublic;
+        var thread = (Thread)typeof(LowLevelKeyHookService).GetField("_hookThread", flags)!.GetValue(isolated)!;
+        var dispatcher = (Dispatcher)typeof(LowLevelKeyHookService).GetField("_hookDispatcher", flags)!.GetValue(isolated)!;
+        try
+        {
+            var callbackThread = dispatcher.Invoke(() => Environment.CurrentManagedThreadId);
+            if (callbackThread == Environment.CurrentManagedThreadId || !thread.IsAlive)
+                throw new Exception("keyboard hook must pump messages independently of the caller");
+        }
+        finally { isolated.Dispose(); }
+        if (thread.IsAlive) throw new Exception("keyboard hook message thread did not shut down");
     }
 
     [StructLayout(LayoutKind.Sequential)]

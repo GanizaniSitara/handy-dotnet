@@ -1,5 +1,6 @@
 using System;
 using System.Runtime.InteropServices;
+using System.Threading;
 using System.Windows;
 using System.Windows.Interop;
 using System.Windows.Media;
@@ -55,6 +56,18 @@ public partial class RecordingOverlay : Window
     }
 
     private readonly DispatcherTimer _topmostTimer;
+
+    internal void PrepareForFirstShow()
+    {
+        // Create the native window and lay out its contents while it stays
+        // hidden. Never call Show/ApplyPosition here: both can reveal it.
+        var timer = System.Diagnostics.Stopwatch.StartNew();
+        new WindowInteropHelper(this).EnsureHandle();
+        Shell.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+        Shell.Arrange(new Rect(Shell.DesiredSize));
+        Shell.UpdateLayout();
+        Log.Info($"Flow: overlay-preparation elapsedMs={timer.ElapsedMilliseconds} visible={IsVisible}");
+    }
 
     private void ReassertTopmost()
     {
@@ -125,6 +138,8 @@ public partial class RecordingOverlay : Window
 
     private const double BarMaxHeight = 18;
     private const double BarMinHeight = 2;
+    private float[]? _latestLevels;
+    private int _levelsPending;
 
     private void ResetBars()
     {
@@ -137,19 +152,20 @@ public partial class RecordingOverlay : Window
     /// </summary>
     public void SetLevels(float[] levels)
     {
-        if (!Dispatcher.CheckAccess())
+        Interlocked.Exchange(ref _latestLevels, levels);
+        if (Interlocked.Exchange(ref _levelsPending, 1) != 0) return;
+        Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(() =>
         {
-            Dispatcher.BeginInvoke(new Action(() => SetLevels(levels)));
-            return;
-        }
-        if (levels is null || levels.Length == 0) return;
-
-        var bars = new[] { Bar0, Bar1, Bar2, Bar3, Bar4 };
-        for (int i = 0; i < bars.Length; i++)
-        {
-            var v = i < levels.Length ? Math.Clamp(levels[i], 0f, 1f) : 0f;
-            bars[i].Height = BarMinHeight + v * (BarMaxHeight - BarMinHeight);
-        }
+            var latest = Interlocked.Exchange(ref _latestLevels, null);
+            Volatile.Write(ref _levelsPending, 0);
+            if (!IsVisible || LevelBars.Visibility != Visibility.Visible || latest is null) return;
+            var bars = new[] { Bar0, Bar1, Bar2, Bar3, Bar4 };
+            for (int i = 0; i < bars.Length; i++)
+            {
+                var v = i < latest.Length ? Math.Clamp(latest[i], 0f, 1f) : 0f;
+                bars[i].Height = BarMinHeight + v * (BarMaxHeight - BarMinHeight);
+            }
+        }));
     }
 
     // Upstream Handy uses the monitor under the cursor (not the foreground

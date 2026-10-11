@@ -163,6 +163,11 @@ public sealed class AppSettings
     /// V2 / V3: force that variant; if the requested files aren't on disk, fall back to whatever's installed.</summary>
     public string ParakeetVariant { get; set; } = "Auto";
 
+    // Machine-specific tuning. Keep portable defaults; benchmark before raising
+    // the thread count or favoring inference over background CPU workloads.
+    public int ParakeetEncoderThreads { get; set; } = 4;
+    public bool ParakeetPrioritizeInference { get; set; } = false;
+
     /// <summary>tiny.en | tiny | base | base.en | small | small.en. Used only when TranscriptionBackend = Whisper.</summary>
     public string WhisperModel { get; set; } = "base";
 
