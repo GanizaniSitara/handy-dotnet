@@ -168,6 +168,11 @@ public sealed class AppSettings
     public int ParakeetEncoderThreads { get; set; } = 4;
     public bool ParakeetPrioritizeInference { get; set; } = false;
 
+    /// <summary>Run the whole app above normal priority so hotkeys, the
+    /// overlay and paste stay responsive when other programs saturate the CPU.
+    /// Handy is idle almost all the time, so this costs other programs little.</summary>
+    public bool RunAboveNormalPriority { get; set; } = true;
+
     /// <summary>CPU | GPU. GPU runs the Parakeet encoder through DirectML on
     /// any DirectX 12 graphics card (NVIDIA, AMD, Intel) with nothing extra to
     /// install; it needs the GPU build of the model, which Settings downloads.

@@ -108,7 +108,11 @@ public sealed class LowLevelKeyHookService : IDisposable
             try { InstallOnHookThread(); }
             finally { ready.Set(); }
             Dispatcher.Run();
-        }) { IsBackground = true, Name = "Handy keyboard hook" };
+        }) { IsBackground = true, Name = "Handy keyboard hook",
+            // Windows silently unhooks a low-level hook that misses its
+            // response deadline. Under full CPU load a normal-priority thread
+            // can, and the hotkey just stops working until restart.
+            Priority = ThreadPriority.Highest };
         _hookThread.Start();
         ready.Wait();
     }
