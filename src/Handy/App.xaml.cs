@@ -586,21 +586,23 @@ public partial class App : Application
         _recording = true;
         var startTimer = Stopwatch.StartNew();
         _dictationGeneration++;
+        ResetSpeculativeState();
+        // Mark the recording start before any UI work: the first overlay show
+        // after idle can take 0.5-5 s, and audio spoken during it was lost.
+        _audio!.Start(_settings.PreRollMs);
+        var captureMs = startTimer.ElapsedMilliseconds;
         _captureDestination = destination;
         _captureStartedAtUtc = DateTimeOffset.UtcNow;
         _captureForeground = foreground == IntPtr.Zero
             ? ForegroundWindowSnapshot.Capture() : ForegroundWindowSnapshot.Capture(foreground);
-        var foregroundMs = startTimer.ElapsedMilliseconds;
+        var foregroundMs = startTimer.ElapsedMilliseconds - captureMs;
         _session?.SetPhase(SessionPhase.Listening);
         _recStartTicks = Stopwatch.GetTimestamp();
-        ResetSpeculativeState();
         _tray?.SetState(Services.TrayIconManager.State.Recording);
         ShowOverlay(RecordingOverlay.State.Recording);
-        var overlayMs = startTimer.ElapsedMilliseconds - foregroundMs;
+        var overlayMs = startTimer.ElapsedMilliseconds - captureMs - foregroundMs;
         _feedback?.PlayStart();
-        var feedbackMs = startTimer.ElapsedMilliseconds - foregroundMs - overlayMs;
-        _audio!.Start(_settings.PreRollMs);
-        var captureMs = startTimer.ElapsedMilliseconds - foregroundMs - overlayMs - feedbackMs;
+        var feedbackMs = startTimer.ElapsedMilliseconds - captureMs - foregroundMs - overlayMs;
         if (destination == CaptureDestination.Paste)
             _injector!.PrepareTarget(new IntPtr(_captureForeground.Hwnd));
         StartCaptureWatchdog();
