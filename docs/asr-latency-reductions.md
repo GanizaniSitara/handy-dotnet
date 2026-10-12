@@ -18,9 +18,9 @@ Rollback binaries and
 pre-tuning settings are under `artifacts/dct-038/rollback-before-engine-tuning`.
 
 The latest reported missed paste at 12:08:35 was explicitly `WrongWindow`:
-dictation began in DCT-038, but Task Manager had focus when the 4560 ms decode
+dictation began in a console window, but Task Manager had focus when the 4560 ms decode
 finished. This is a focus-policy refusal, not evidence that CPU saturation lost
-the transcript. At 12:08:58 another injection targeted `Select DCT-038` and
+the transcript. At 12:08:58 another injection targeted `Select <console>` and
 Windows accepted every event. Console selection can suspend the receiving CLI;
 accepted SendInput is not confirmation of receipt. Later direct console-state
 inspection found QuickEdit enabled and selection flags zero, so the selection
@@ -250,7 +250,7 @@ Warm-up start/completion and elapsed time use the always-visible `Session:` log
 channel. At Verbose level, `Flow: capture-start` separates foreground lookup,
 overlay/setup, feedback and microphone startup; `Flow: asr-gate` measures lock
 wait. Existing `Diag:` entries cover VAD, decode and paste. Actual live startup
-and sleep/wake reproduction remain required before closing DCT-038. No claim
+and sleep/wake reproduction remain required before closing this investigation. No claim
 about microphone recovery or Whisper performance follows from the Parakeet bench.
 
 Follow-up verification on 2026-10-11: the isolated Release solution build passed
@@ -278,7 +278,7 @@ normal sleep/wake cycle:
    capture-start, ASR gate wait, decode and release-to-finished timings.
 3. After actual sleep/wake, verify `reason=resume` completion, microphone
    capture and the same first/next dictation measurements.
-4. Confirm the reported delay is reduced before marking DCT-038 complete;
+4. Confirm the reported delay is reduced before marking this investigation complete;
    if it occurs before Listening, use the capture-start and startup timings
    to investigate that path rather than attributing it to decode.
 
