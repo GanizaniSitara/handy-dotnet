@@ -58,9 +58,12 @@ if (args.Length == 2 && args[0] == "--probe-paste-target")
         var probeMs = timer.Elapsed.TotalMilliseconds;
         timer.Restart();
         var method = bridge.PreferredClipboardMethod(hwnd);
+        var target = ConsolePasteTarget.Probe(hwnd);
         Console.WriteLine(JsonSerializer.Serialize(new { pass, hwnd = args[1], method, probeMs,
             validationMs = timer.Elapsed.TotalMilliseconds,
-            otherWindowMethod = bridge.PreferredClipboardMethod(new IntPtr(1)) }));
+            otherWindowMethod = bridge.PreferredClipboardMethod(new IntPtr(1)),
+            client = target is null ? null : new { target.OwnerPid, target.ClientPid, target.Executable, target.ClientStartedUtc },
+            bracketed = bridge.UseBracketedPaste(hwnd) }));
     }
     return;
 }

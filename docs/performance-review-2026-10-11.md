@@ -1,5 +1,29 @@
 # Handy.NET performance review — 11 October 2026
 
+## Paste follow-up — 16 October 2026
+
+Classic agy consoles accept Direct character events but process a large burst
+slowly: a roughly 2,000-character draft took 8–9 seconds to finish displaying,
+after the Windows input queue had emptied. Explicit bracketed paste displayed
+the same size draft within about 0.3 seconds in disposable agy windows. A Ctrl+V
+chord and explicit paste framing are different delivery paths.
+
+The source now identifies classic Gemini consoles using their window owner,
+client executable and, for Node, the actual Google Gemini CLI script argument.
+It sends a single bracketed Unicode batch for dictation and retype. Windows
+Terminal retains its native clipboard route. The explicit None method remains
+disabled; unknown applications retain their configured method. Failed batches
+are reported without silently retrying Direct input, and focus is checked
+again after detection and before an optional submit.
+
+Validation: text-injection and recovery fixtures pass, including multiline
+Unicode frames, executable classification, retype, batch failures and focus
+changes. Read-only probes recognized a live agy client and a disposable Google
+Gemini Node client. Actual Handy SendInput delivery was not live-tested because
+that requires foreground focus; the running Handy app has not been replaced.
+
+## Original review
+
 Reviewed source at `c1a71f8` plus the existing uncommitted warm-up changes, live settings, running process, and local logs. This review does not change application behavior or settings. Source locations below refer to that checkout.
 
 ## Evidence and limits

@@ -18,6 +18,13 @@ public interface IWindowBridge
     bool IsWindowsTerminalForeground();
     Task PreparePasteTargetAsync(IntPtr hwnd) => Task.CompletedTask;
     string? PreferredClipboardMethod(IntPtr hwnd) => null;
+    bool UseBracketedPaste(IntPtr hwnd) => false;
+    uint SendUnicodeText(string text)
+    {
+        uint sent = 0;
+        foreach (var ch in text) sent += SendUnicode(ch);
+        return sent;
+    }
     bool IsElevationMismatch(IntPtr hwnd, out string targetName, out int lastErr);
     uint SendUnicode(char ch);
     uint SendKey(ushort vk, bool down);
@@ -29,15 +36,30 @@ public interface IWindowBridge
 
 public sealed class DefaultWindowBridge : IWindowBridge
 {
-    // No per-target route overrides. A classic console hosting a TUI (agy, a
-    // Go Bubble Tea app) runs in raw VT input mode, so conhost never turns
-    // Ctrl+V into a paste; the chord reaches the app as a key and nothing
-    // lands. Direct typing is what delivers there, exactly as in every other
-    // console, and the Alt+Shift+V recovery proved it. Keep the hooks so a
-    // test bridge can still drive the route logic.
+    // Classic Gemini consoles need explicit paste framing, not a Ctrl+V chord
+    // or a burst of ordinary characters. Re-probe at delivery, including retype.
     public Task PreparePasteTargetAsync(IntPtr hwnd) => Task.CompletedTask;
 
     public string? PreferredClipboardMethod(IntPtr hwnd) => null;
+
+    public bool UseBracketedPaste(IntPtr hwnd)
+    {
+        var target = ConsolePasteTarget.Probe(hwnd);
+        if (target is null || !target.IsCurrent(hwnd)) return false;
+        Log.Info($"Paste: bracketed target owner={target.OwnerPid} client={target.ClientPid} exe={target.Executable}");
+        return true;
+    }
+
+    public uint SendUnicodeText(string text)
+    {
+        var records = new NativeMethods.INPUT[checked(text.Length * 2)];
+        for (var i = 0; i < text.Length; i++)
+        {
+            records[i * 2] = TextInjectionService.Unicode(text[i], true);
+            records[i * 2 + 1] = TextInjectionService.Unicode(text[i], false);
+        }
+        return records.Length == 0 ? 0 : NativeMethods.SendInput((uint)records.Length, ref records[0], NativeMethods.INPUT.Size);
+    }
 
     private static readonly string[] CitrixProcessNames =
     {

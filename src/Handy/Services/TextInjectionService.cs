@@ -94,6 +94,31 @@ public sealed class TextInjectionService
             return new PasteResult(PasteOutcome.Delivered);
         }
 
+        if (_bridge.UseBracketedPaste(actualHwnd))
+        {
+            // Re-check after process inspection. A frame must never straddle
+            // two foreground applications, even under the PasteAnyway policy.
+            if (_bridge.GetForegroundWindow() != actualHwnd)
+                return new PasteResult(PasteOutcome.WrongWindow, _bridge.DescribeForegroundWindow());
+            var normalized = text.Replace("\r\n", "\n").Replace('\r', '\n');
+            var frame = "\x1b[200~" + normalized + "\x1b[201~";
+            var sent = _bridge.SendUnicodeText(frame);
+            var error = _bridge.GetLastWin32Error();
+            var outcome = PasteTargetPolicy.Classify(sent, (uint)frame.Length * 2, error);
+            Log.Info($"Paste: bracketed events injected={sent} (expected={frame.Length * 2}), chars={text.Length}, lastErr={error}");
+            if (!outcome.IsDelivered())
+                return new PasteResult(outcome, DescribeFailure(outcome, actualHwnd, error));
+            if (!string.IsNullOrWhiteSpace(settings.AutoSubmitKey)
+                && !settings.AutoSubmitKey.Equals("None", StringComparison.OrdinalIgnoreCase))
+            {
+                _bridge.Sleep(Math.Min(4000, 800 + normalized.Length / 200 * 100));
+                if (_bridge.GetForegroundWindow() != actualHwnd)
+                    return new PasteResult(PasteOutcome.Interrupted, "Focus changed before submit", text.Length);
+                SendAutoSubmit(settings.AutoSubmitKey);
+            }
+            return new PasteResult(PasteOutcome.Delivered, null, text.Length);
+        }
+
         if (string.Equals(method, "Direct", StringComparison.OrdinalIgnoreCase))
         {
             // The prepared route belongs to this dictation's captured target.

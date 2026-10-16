@@ -681,6 +681,71 @@ static void AssertTextInjectionService()
         AssertEqual(true, res.Citrix, "citrix: flagged on result");
     }
 
+    // Identified Gemini consoles receive a single framed batch for every paste
+    // mode, including recovery. No protocol markers enter the clipboard.
+    foreach (var method in new[] { "Direct", "CtrlV", "ShiftInsert" })
+    foreach (var intended in new[] { new IntPtr(0x1000), IntPtr.Zero })
+    {
+        var mock = new MockWindowBridge { BracketedPaste = true };
+        var res = new TextInjectionService(mock).Paste("one\r\n£漢😀\rtwo", new AppSettings
+            { PasteMethod = method, AutoSubmitKey = "None" }, intended);
+        AssertEqual(PasteOutcome.Delivered, res.Outcome, "gemini: batch delivered");
+        AssertEqual("\x1b[200~one\n£漢😀\ntwo\x1b[201~", mock.BatchText, "gemini: exact frame");
+        AssertEqual(1, mock.BatchCalls, "gemini: one batch");
+        AssertEqual(0, mock.SentChars.Count, "gemini: no ordinary character loop");
+        AssertEqual(0u, mock.SentKeyCount, "gemini: no paste chord or submit");
+        AssertEqual<string?>(null, mock.ClipboardContent, "gemini: clipboard untouched");
+    }
+    foreach (var accepted in new[] { 0u, 2u })
+    {
+        var mock = new MockWindowBridge { BracketedPaste = true, BatchAccepted = accepted };
+        var res = new TextInjectionService(mock).Paste("test", new AppSettings
+            { PasteMethod = "Direct", AutoSubmitKey = "Enter" }, mock.ForegroundWindow);
+        AssertEqual(accepted == 0 ? PasteOutcome.Refused : PasteOutcome.Partial, res.Outcome, "gemini: batch failure detected");
+        AssertEqual(0u, mock.SentKeyCount, "gemini: failed paste never submits");
+        AssertEqual(0, mock.SentChars.Count, "gemini: failed batch never retries as Direct");
+    }
+    {
+        var mock = new MockWindowBridge { BracketedPaste = true };
+        var res = new TextInjectionService(mock).Paste(new string('x', 10000), new AppSettings
+            { PasteMethod = "Direct", AutoSubmitKey = "Enter" }, mock.ForegroundWindow);
+        AssertEqual(PasteOutcome.Delivered, res.Outcome, "gemini: optional submit delivered");
+        AssertEqual(4000, mock.SleptMs, "gemini: long paste settling bounded");
+        AssertEqual(2u, mock.SentKeyCount, "gemini: one separate Enter pair");
+    }
+    {
+        var mock = new MockWindowBridge { BracketedPaste = true };
+        mock.OnProbe = () => mock.ForegroundWindow = new IntPtr(0x9999);
+        var res = new TextInjectionService(mock).Paste("test", new AppSettings { PasteMethod = "Direct" }, new IntPtr(0x1000));
+        AssertEqual(PasteOutcome.WrongWindow, res.Outcome, "gemini: focus changed during process probe");
+        AssertEqual(0, mock.BatchCalls, "gemini: no batch into changed target");
+    }
+    {
+        var mock = new MockWindowBridge { BracketedPaste = true };
+        mock.OnSleep = () => mock.ForegroundWindow = new IntPtr(0x9999);
+        var res = new TextInjectionService(mock).Paste("test", new AppSettings
+            { PasteMethod = "Direct", AutoSubmitKey = "Enter" }, mock.ForegroundWindow);
+        AssertEqual(PasteOutcome.Interrupted, res.Outcome, "gemini: focus changed before submit");
+        AssertEqual(0u, mock.SentKeyCount, "gemini: no Enter into changed target");
+    }
+    {
+        var mock = new MockWindowBridge { BracketedPaste = true };
+        new TextInjectionService(mock).Paste("disabled", new AppSettings { PasteMethod = "None" }, mock.ForegroundWindow);
+        AssertEqual(0, mock.BatchCalls, "gemini: None remains disabled");
+    }
+    foreach (var row in new[]
+    {
+        ("agy.exe", "", true),
+        ("GEMINI.EXE", "", true),
+        ("node.exe", "node.exe C:\\npm\\node_modules\\@google\\gemini-cli\\bundle\\gemini.js", true),
+        ("node.exe", "\"C:\\Program Files\\node.exe\" \"C:\\npm dir\\@google\\gemini-cli\\dist\\index.js\"", true),
+        ("node.exe", "node.exe C:/npm/@google/gemini-cli/bundle/gemini.js", true),
+        ("node.exe", "node.exe C:/npm/@google/gemini-cli-other/index.js", false),
+        ("node.exe", "node.exe app.js --prompt C:/npm/@google/gemini-cli/bundle/gemini.js", false),
+        ("cmd.exe", "cmd.exe echo C:/npm/@google/gemini-cli/index.js", false),
+        ("claude.exe", "Gemini", false),
+    }) AssertEqual(row.Item3, ConsolePasteTarget.IsGeminiClient(row.Item1, row.Item2), "gemini process classifier: " + row.Item1);
+
     // 16. Direct into Windows Terminal pastes in one go instead of typing per key
     {
         var mock = new MockWindowBridge { ForegroundWindow = new IntPtr(0x1000), WindowsTerminal = true };
@@ -769,6 +834,22 @@ sealed class MockWindowBridge : IWindowBridge
     public bool WindowsTerminal { get; set; } = false;
     public bool IsWindowsTerminalForeground() => WindowsTerminal;
     public string? ClipboardMethod { get; set; }
+    public bool BracketedPaste { get; set; }
+    public string? BatchText { get; set; }
+    public int BatchCalls { get; set; }
+    public uint? BatchAccepted { get; set; }
+    public Action? OnProbe { get; set; }
+    public bool UseBracketedPaste(IntPtr hwnd)
+    {
+        OnProbe?.Invoke();
+        return BracketedPaste;
+    }
+    public uint SendUnicodeText(string text)
+    {
+        BatchText = text;
+        BatchCalls++;
+        return BatchAccepted ?? (uint)text.Length * 2;
+    }
     public string? PreferredClipboardMethod(IntPtr hwnd) => ClipboardMethod;
     public Action? OnSleep { get; set; }
 
@@ -805,7 +886,12 @@ sealed class MockWindowBridge : IWindowBridge
 
     public string? TryReadClipboard() => ClipboardContent;
 
-    public void Sleep(int ms) => OnSleep?.Invoke();
+    public int SleptMs { get; set; }
+    public void Sleep(int ms)
+    {
+        SleptMs += ms;
+        OnSleep?.Invoke();
+    }
 
     public int GetLastWin32Error() => LastWin32Error;
 }
