@@ -354,7 +354,7 @@
                                         <ColumnDefinition Width="160"/>
                                     </Grid.ColumnDefinitions>
                                     <TextBlock Grid.Column="0" Text="If target window changes" Style="{StaticResource Text.SettingLabel}"
-                                               ToolTip="Action if focus moves before paste. RefuseAndCopy leaves transcript on clipboard. RestoreAndPaste attempts to reactivate original window. PasteAnyway types into current window."/>
+                                               ToolTip="Action if focus moves before paste. RefuseAndCopy leaves transcript on clipboard. RestoreAndPaste attempts to reactivate original window. PasteAnyway starts in the current window. Every mode stops if focus moves during typing."/>
                                     <ComboBox  Grid.Column="1" x:Name="PasteFocusPolicyCombo">
                                         <ComboBoxItem Content="RefuseAndCopy"/>
                                         <ComboBoxItem Content="RestoreAndPaste"/>

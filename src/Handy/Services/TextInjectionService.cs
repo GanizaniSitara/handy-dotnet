@@ -25,13 +25,6 @@ public sealed record PasteResult(PasteOutcome Outcome, string? Detail = null, in
 
 public sealed class TextInjectionService
 {
-    /// <summary>
-    /// How often the Direct injection loop re-checks that focus hasn't moved.
-    /// Small enough that a steal costs a few characters, large enough that the
-    /// extra GetForegroundWindow calls don't show up in the latency budget.
-    /// </summary>
-    private const int FocusCheckEveryChars = 16;
-
     // Modifier chords must be sent in three stages: press the modifier(s),
     // press+release the action key, sleep, then release the modifier(s).
     // Sending a single batched 4-event SendInput collapses the Ctrl-up and
@@ -65,6 +58,8 @@ public sealed class TextInjectionService
 
         var actualHwnd = _bridge.GetForegroundWindow();
         var policy = PasteTargetPolicy.ParseFocusPolicy(settings.PasteFocusPolicy);
+        if (actualHwnd == IntPtr.Zero)
+            return new PasteResult(PasteOutcome.WrongWindow, "No foreground window");
 
         // Refuse to type into a window the user wasn't looking at, unless configured
         // otherwise (PasteAnyway) or successfully restored (RestoreAndPaste).
@@ -90,7 +85,8 @@ public sealed class TextInjectionService
 
         if (string.Equals(method, "None", StringComparison.OrdinalIgnoreCase))
         {
-            SendAutoSubmit(settings.AutoSubmitKey);
+            if (!SendAutoSubmit(settings.AutoSubmitKey, actualHwnd))
+                return new PasteResult(PasteOutcome.Interrupted, "Focus changed before submit");
             return new PasteResult(PasteOutcome.Delivered);
         }
 
@@ -104,7 +100,8 @@ public sealed class TextInjectionService
             var frame = "\x1b[200~" + normalized + "\x1b[201~";
             var sent = _bridge.SendUnicodeText(frame);
             var error = _bridge.GetLastWin32Error();
-            var outcome = PasteTargetPolicy.Classify(sent, (uint)frame.Length * 2, error);
+            var outcome = PasteTargetPolicy.Classify(sent, (uint)frame.Length * 2, error,
+                _bridge.GetForegroundWindow() == actualHwnd);
             Log.Info($"Paste: bracketed events injected={sent} (expected={frame.Length * 2}), chars={text.Length}, lastErr={error}");
             if (!outcome.IsDelivered())
                 return new PasteResult(outcome, DescribeFailure(outcome, actualHwnd, error));
@@ -114,7 +111,8 @@ public sealed class TextInjectionService
                 _bridge.Sleep(Math.Min(4000, 800 + normalized.Length / 200 * 100));
                 if (_bridge.GetForegroundWindow() != actualHwnd)
                     return new PasteResult(PasteOutcome.Interrupted, "Focus changed before submit", text.Length);
-                SendAutoSubmit(settings.AutoSubmitKey);
+                if (!SendAutoSubmit(settings.AutoSubmitKey, actualHwnd))
+                    return new PasteResult(PasteOutcome.Interrupted, "Focus changed before submit", text.Length);
             }
             return new PasteResult(PasteOutcome.Delivered, null, text.Length);
         }
@@ -136,7 +134,7 @@ public sealed class TextInjectionService
         {
             var citrix = _bridge.IsCitrixForeground();
             var delay = citrix ? settings.DirectCharDelayMsCitrix : settings.DirectCharDelayMs;
-            var sent = SendUnicodeString(text, delay, actualHwnd, policy, out var charsDone, out var focusHeld);
+            var sent = SendUnicodeString(text, delay, actualHwnd, out var charsDone, out var focusHeld);
             var directErr = _bridge.GetLastWin32Error();
             var expected = (uint)(charsDone * 2);
             var outcome = PasteTargetPolicy.Classify(sent, expected, directErr, focusHeld);
@@ -147,7 +145,8 @@ public sealed class TextInjectionService
             if (!outcome.IsDelivered())
                 return new PasteResult(outcome, DescribeFailure(outcome, actualHwnd, directErr), charsDone, citrix);
 
-            SendAutoSubmit(settings.AutoSubmitKey);
+            if (!SendAutoSubmit(settings.AutoSubmitKey, actualHwnd))
+                return new PasteResult(PasteOutcome.Interrupted, "Focus changed before submit", charsDone, citrix);
             return new PasteResult(PasteOutcome.Delivered, null, charsDone, citrix);
         }
 
@@ -163,14 +162,15 @@ public sealed class TextInjectionService
             var citrix = _bridge.IsCitrixForeground();
             var fallbackSent = SendUnicodeString(
                 text, citrix ? settings.DirectCharDelayMsCitrix : settings.DirectCharDelayMs,
-                actualHwnd, policy, out var fallbackChars, out var fallbackFocusHeld);
+                actualHwnd, out var fallbackChars, out var fallbackFocusHeld);
             var fallbackErr = _bridge.GetLastWin32Error();
             var fallbackOutcome = PasteTargetPolicy.Classify(
                 fallbackSent, (uint)(fallbackChars * 2), fallbackErr, fallbackFocusHeld);
             if (!fallbackOutcome.IsDelivered())
                 return new PasteResult(fallbackOutcome, DescribeFailure(fallbackOutcome, actualHwnd, fallbackErr), fallbackChars);
 
-            SendAutoSubmit(settings.AutoSubmitKey);
+            if (!SendAutoSubmit(settings.AutoSubmitKey, actualHwnd))
+                return new PasteResult(PasteOutcome.Interrupted, "Focus changed before submit", fallbackChars, citrix);
             return new PasteResult(PasteOutcome.Delivered, null, fallbackChars);
         }
         Log.Info($"Paste: clipboard set ({text.Length} chars), method={method}, restoreAfter={restoreAfter}");
@@ -190,12 +190,13 @@ public sealed class TextInjectionService
         uint injected;
         switch (method.ToLowerInvariant())
         {
-            case "shiftinsert": injected = SendShiftInsert();  expectedChord = 4; break;
-            case "ctrlshiftv":  injected = SendCtrlShiftV();   expectedChord = 6; break;
-            default:            injected = SendCtrlV();        expectedChord = 4; break;
+            case "shiftinsert": injected = SendShiftInsert(actualHwnd);  expectedChord = 4; break;
+            case "ctrlshiftv":  injected = SendCtrlShiftV(actualHwnd);   expectedChord = 6; break;
+            default:            injected = SendCtrlV(actualHwnd);        expectedChord = 4; break;
         }
         var lastErr = _bridge.GetLastWin32Error();
-        var chordOutcome = PasteTargetPolicy.Classify(injected, expectedChord, lastErr);
+        var chordOutcome = PasteTargetPolicy.Classify(injected, expectedChord, lastErr,
+            _bridge.GetForegroundWindow() == actualHwnd);
         Log.Info($"Paste: SendInput events injected={injected} (expected={expectedChord}), lastErr={lastErr}");
 
         // Restore the clipboard before returning on either path, or a failed
@@ -208,7 +209,8 @@ public sealed class TextInjectionService
             return new PasteResult(chordOutcome, DescribeFailure(chordOutcome, actualHwnd, lastErr));
         }
 
-        SendAutoSubmit(settings.AutoSubmitKey);
+        if (!SendAutoSubmit(settings.AutoSubmitKey, actualHwnd))
+            return new PasteResult(PasteOutcome.Interrupted, "Focus changed before submit");
 
         if (restoreAfter && previous is not null)
         {
@@ -257,38 +259,49 @@ public sealed class TextInjectionService
         return $"Windows did not accept the keystrokes (lastErr={lastErr})";
     }
 
-    private uint SendCtrlV()
+    private uint SendCtrlV(IntPtr target)
     {
         const ushort VK_CONTROL = 0x11, VK_V = 0x56;
         uint sent = 0;
         sent += _bridge.SendKey(VK_CONTROL, true);
-        sent += _bridge.SendKey(VK_V, true);
-        sent += _bridge.SendKey(VK_V, false);
+        if (_bridge.GetForegroundWindow() == target)
+        {
+            sent += _bridge.SendKey(VK_V, true);
+            sent += _bridge.SendKey(VK_V, false);
+        }
         _bridge.Sleep(ChordHoldMs);
         sent += _bridge.SendKey(VK_CONTROL, false);
         return sent;
     }
 
-    private uint SendShiftInsert()
+    private uint SendShiftInsert(IntPtr target)
     {
         const ushort VK_SHIFT = 0x10, VK_INSERT = 0x2D;
         uint sent = 0;
         sent += _bridge.SendKey(VK_SHIFT, true);
-        sent += _bridge.SendKey(VK_INSERT, true);
-        sent += _bridge.SendKey(VK_INSERT, false);
+        if (_bridge.GetForegroundWindow() == target)
+        {
+            sent += _bridge.SendKey(VK_INSERT, true);
+            sent += _bridge.SendKey(VK_INSERT, false);
+        }
         _bridge.Sleep(ChordHoldMs);
         sent += _bridge.SendKey(VK_SHIFT, false);
         return sent;
     }
 
-    private uint SendCtrlShiftV()
+    private uint SendCtrlShiftV(IntPtr target)
     {
         const ushort VK_CONTROL = 0x11, VK_SHIFT = 0x10, VK_V = 0x56;
         uint sent = 0;
         sent += _bridge.SendKey(VK_CONTROL, true);
+        if (_bridge.GetForegroundWindow() != target)
+            return sent + _bridge.SendKey(VK_CONTROL, false);
         sent += _bridge.SendKey(VK_SHIFT,   true);
-        sent += _bridge.SendKey(VK_V, true);
-        sent += _bridge.SendKey(VK_V, false);
+        if (_bridge.GetForegroundWindow() == target)
+        {
+            sent += _bridge.SendKey(VK_V, true);
+            sent += _bridge.SendKey(VK_V, false);
+        }
         _bridge.Sleep(ChordHoldMs);
         sent += _bridge.SendKey(VK_SHIFT,   false);
         sent += _bridge.SendKey(VK_CONTROL, false);
@@ -305,7 +318,7 @@ public sealed class TextInjectionService
     /// (length x charDelayMs), so the exposure is real, not theoretical.
     /// </summary>
     private uint SendUnicodeString(
-        string text, int charDelayMs, IntPtr expectedHwnd, PasteFocusPolicy focusPolicy,
+        string text, int charDelayMs, IntPtr expectedHwnd,
         out int charsSent, out bool focusHeld)
     {
         uint total = 0;
@@ -314,26 +327,19 @@ public sealed class TextInjectionService
 
         for (var i = 0; i < text.Length; i++)
         {
-            if (expectedHwnd != IntPtr.Zero && i % FocusCheckEveryChars == 0)
+            // PasteAnyway may select the current window at entry, but a paste
+            // already in progress must never follow focus into another app.
+            // Never restore mid-stream: a Citrix viewer cannot identify which
+            // remote control would receive the remaining text.
+            if (expectedHwnd != IntPtr.Zero)
             {
                 var current = _bridge.GetForegroundWindow();
                 if (current != expectedHwnd)
                 {
-                    if (focusPolicy == PasteFocusPolicy.PasteAnyway)
-                    {
-                        // User opted to type anyway regardless of focus changes
-                    }
-                    else if (focusPolicy == PasteFocusPolicy.RestoreAndPaste && TryRestoreFocus(expectedHwnd))
-                    {
-                        Log.Info($"Paste: focus steal recovered during injection; restored 0x{expectedHwnd.ToInt64():X}.");
-                    }
-                    else
-                    {
-                        focusHeld = false;
-                        Log.Warn($"Paste: focus left the target after {charsSent}/{text.Length} chars " +
-                                 $"(now {_bridge.DescribeWindow(current)}); stopping injection.");
-                        break;
-                    }
+                    focusHeld = false;
+                    Log.Warn($"Paste: focus left the target after {charsSent}/{text.Length} chars " +
+                             $"(now {_bridge.DescribeWindow(current)}); stopping injection.");
+                    break;
                 }
             }
 
@@ -341,13 +347,16 @@ public sealed class TextInjectionService
             charsSent++;
             if (charDelayMs > 0) _bridge.Sleep(charDelayMs);
         }
+        if (_bridge.GetForegroundWindow() != expectedHwnd) focusHeld = false;
         return total;
     }
 
-    private void SendAutoSubmit(string key)
+    private bool SendAutoSubmit(string key, IntPtr target)
     {
         if (string.IsNullOrWhiteSpace(key) || string.Equals(key, "None", StringComparison.OrdinalIgnoreCase))
-            return;
+            return true;
+
+        if (_bridge.GetForegroundWindow() != target) return false;
 
         const ushort VK_RETURN = 0x0D, VK_CONTROL = 0x11;
         switch (key.ToLowerInvariant())
@@ -359,11 +368,17 @@ public sealed class TextInjectionService
             case "ctrlenter":
             case "cmdenter":
                 _bridge.SendKey(VK_CONTROL, true);
+                if (_bridge.GetForegroundWindow() != target)
+                {
+                    _bridge.SendKey(VK_CONTROL, false);
+                    return false;
+                }
                 _bridge.SendKey(VK_RETURN,  true);
                 _bridge.SendKey(VK_RETURN,  false);
                 _bridge.SendKey(VK_CONTROL, false);
                 break;
         }
+        return true;
     }
 
     internal static NativeMethods.INPUT Key(ushort vk, bool down) => new()

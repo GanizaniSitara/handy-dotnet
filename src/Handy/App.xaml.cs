@@ -1343,6 +1343,12 @@ public partial class App : Application
             {
                 var result = injector.Paste(text, settings, IntPtr.Zero);
                 Log.Info($"retype-last-transcription: {text.Length} chars, outcome={result.Outcome}, citrix={result.Citrix}");
+                if (!result.Delivered)
+                {
+                    CopyTextToClipboard(text, "retype-interrupted");
+                    Dispatcher.Invoke(() => _tray?.Notify("Handy.NET",
+                        "Retype stopped. Transcript saved; check the partial text before retrying."));
+                }
             });
             if (outcome != RecoveryRetypeOutcome.Completed)
                 Log.Warn($"retype-last-transcription: skipped ({outcome})");

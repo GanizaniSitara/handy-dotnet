@@ -567,11 +567,11 @@ static void AssertTextInjectionService()
         var text = "12345678901234567890123456789012"; // 32 chars
         var res = injector.Paste(text, settings, new IntPtr(0x1000));
         AssertEqual(PasteOutcome.Interrupted, res.Outcome, "injection: mid-steal interrupted");
-        AssertEqual(16, res.DeliveredChars, "injection: mid-steal chars delivered");
-        AssertEqual(16, mock.SentChars.Count, "injection: mid-steal chars count");
+        AssertEqual(8, res.DeliveredChars, "injection: mid-steal chars delivered");
+        AssertEqual(8, mock.SentChars.Count, "injection: mid-steal chars count");
     }
 
-    // 7. Mid-injection focus steal under PasteAnyway
+    // 7. PasteAnyway applies at entry, never to a mid-stream focus change.
     {
         var mock = new MockWindowBridge { ForegroundWindow = new IntPtr(0x1000) };
         mock.OnUnicodeChar = (count) =>
@@ -582,11 +582,11 @@ static void AssertTextInjectionService()
         settings.PasteFocusPolicy = "PasteAnyway";
         var text = "12345678901234567890123456789012";
         var res = injector.Paste(text, settings, new IntPtr(0x1000));
-        AssertEqual(PasteOutcome.Delivered, res.Outcome, "injection: mid-steal paste anyway delivers");
-        AssertEqual(32, res.DeliveredChars, "injection: mid-steal all chars delivered");
+        AssertEqual(PasteOutcome.Interrupted, res.Outcome, "injection: PasteAnyway cannot split a running paste");
+        AssertEqual(8, res.DeliveredChars, "injection: PasteAnyway stops before next character");
     }
 
-    // 8. Mid-injection focus steal under RestoreAndPaste (restore succeeds)
+    // 8. Never restore and resume an already interrupted stream.
     {
         var mock = new MockWindowBridge { ForegroundWindow = new IntPtr(0x1000), AllowRestore = true };
         mock.OnUnicodeChar = (count) =>
@@ -597,8 +597,9 @@ static void AssertTextInjectionService()
         settings.PasteFocusPolicy = "RestoreAndPaste";
         var text = "12345678901234567890123456789012";
         var res = injector.Paste(text, settings, new IntPtr(0x1000));
-        AssertEqual(PasteOutcome.Delivered, res.Outcome, "injection: mid-steal restored delivers");
-        AssertEqual(32, res.DeliveredChars, "injection: mid-steal restored all chars");
+        AssertEqual(PasteOutcome.Interrupted, res.Outcome, "injection: restore policy stops mid-paste");
+        AssertEqual(8, res.DeliveredChars, "injection: restore policy stops before next character");
+        AssertEqual(IntPtr.Zero, mock.RestoredWindow, "injection: no focus stealing mid-paste");
     }
 
     // 9. Mid-injection focus steal under RestoreAndPaste (restore fails)
@@ -613,7 +614,7 @@ static void AssertTextInjectionService()
         var text = "12345678901234567890123456789012";
         var res = injector.Paste(text, settings, new IntPtr(0x1000));
         AssertEqual(PasteOutcome.Interrupted, res.Outcome, "injection: mid-steal restore failed interrupted");
-        AssertEqual(16, res.DeliveredChars, "injection: mid-steal restore failed 16 chars");
+        AssertEqual(8, res.DeliveredChars, "injection: mid-steal restore failed 8 chars");
     }
 
     // 10. Chord paste (CtrlV) wrong window refused
@@ -791,6 +792,66 @@ static void AssertTextInjectionService()
         AssertEqual(0u, mock.SentKeyCount, "clipboard: no chord into changed window");
         AssertEqual("Keep me", mock.ClipboardContent, "clipboard: recovery text preserved");
     }
+    // A Citrix-to-browser switch anywhere in a former 16-character block
+    // stops before another character, with every entry policy.
+    foreach (var policy in new[] { "RefuseAndCopy", "RestoreAndPaste", "PasteAnyway" })
+    for (int stop = 1; stop <= 16; stop++)
+    {
+        var mock = new MockWindowBridge { Citrix = true, AllowRestore = true };
+        mock.OnUnicodeChar = count => { if (count == stop) mock.ForegroundWindow = new IntPtr(0x9999); };
+        var result = new TextInjectionService(mock).Paste(new string('x', 16), new AppSettings
+            { PasteMethod = "Direct", PasteFocusPolicy = policy, AutoSubmitKey = "None" }, mock.ForegroundWindow);
+        AssertEqual(PasteOutcome.Interrupted, result.Outcome, "citrix: stop at each character boundary");
+        AssertEqual(stop, mock.SentChars.Count, "citrix: no characters after observed focus loss");
+        AssertEqual(IntPtr.Zero, mock.RestoredWindow, "citrix: never reclaim focus mid-stream");
+        AssertEqual(true, result.Citrix, "citrix: interrupted paste retains recovery marker");
+    }
+    // A steal immediately after the final character must not send Enter.
+    foreach (var method in new[] { "Direct", "CtrlV", "ShiftInsert", "CtrlShiftV" })
+    {
+        var mock = new MockWindowBridge { Citrix = true };
+        mock.OnUnicodeChar = count => { if (count == 4) mock.ForegroundWindow = new IntPtr(0x9999); };
+        mock.OnSleep = () => mock.ForegroundWindow = new IntPtr(0x9999);
+        var result = new TextInjectionService(mock).Paste("test", new AppSettings
+        {
+            PasteMethod = method, PasteDelayMs = 0, AutoSubmitKey = "Enter",
+            DirectCharDelayMsCitrix = 0, PasteFocusPolicy = "RefuseAndCopy",
+            ClipboardHandling = "DontModify"
+        }, mock.ForegroundWindow);
+        AssertEqual(PasteOutcome.Interrupted, result.Outcome, "focus: final character/chord steal detected: " + method);
+        AssertEqual(false, mock.SentKeys.Any(k => k.vk == 0x0D), "focus: no Enter in other app: " + method);
+        if (method != "Direct")
+            AssertEqual("test", mock.ClipboardContent, "focus: interrupted chord keeps recovery clipboard");
+    }
+    foreach (var policy in new[] { "RefuseAndCopy", "RestoreAndPaste", "PasteAnyway" })
+    {
+        var mock = new MockWindowBridge { ForegroundWindow = IntPtr.Zero };
+        var result = new TextInjectionService(mock).Paste("test", new AppSettings
+            { PasteFocusPolicy = policy }, IntPtr.Zero);
+        AssertEqual(PasteOutcome.WrongWindow, result.Outcome, "focus: unknown foreground refuses: " + policy);
+        AssertEqual(0, mock.SentChars.Count, "focus: no unguarded text");
+    }
+    // A clipboard failure uses the same per-character guard as Direct.
+    {
+        var mock = new MockWindowBridge { FailSetClipboard = true, Citrix = true };
+        mock.OnUnicodeChar = count => { if (count == 1) mock.ForegroundWindow = new IntPtr(0x9999); };
+        var result = new TextInjectionService(mock).Paste("test", new AppSettings
+            { PasteMethod = "CtrlV", PasteFocusPolicy = "RefuseAndCopy" }, mock.ForegroundWindow);
+        AssertEqual(PasteOutcome.Interrupted, result.Outcome, "focus: fallback stops after one character");
+        AssertEqual(1, mock.SentChars.Count, "focus: fallback never emits next character into thief");
+    }
+    // Focus may change while pressing a chord's modifier. Release anything
+    // already pressed, but never send the action key into the other app.
+    foreach (var method in new[] { "CtrlV", "ShiftInsert", "CtrlShiftV" })
+    {
+        var mock = new MockWindowBridge();
+        mock.OnKey = () => mock.ForegroundWindow = new IntPtr(0x9999);
+        var result = new TextInjectionService(mock).Paste("test", new AppSettings
+            { PasteMethod = method, PasteDelayMs = 0 }, mock.ForegroundWindow);
+        AssertEqual(PasteOutcome.Interrupted, result.Outcome, "chord: modifier steal interrupts");
+        AssertEqual(2u, mock.SentKeyCount, "chord: pressed modifier released");
+        AssertEqual(false, mock.SentKeys.Any(k => k.vk == 0x56 || k.vk == 0x2D), "chord: no action key into thief");
+    }
 }
 
 sealed class MockWindowBridge : IWindowBridge
@@ -811,6 +872,7 @@ sealed class MockWindowBridge : IWindowBridge
     public bool FailSetClipboard { get; set; } = false;
 
     public Action<int>? OnUnicodeChar;
+    public Action? OnKey;
 
     public IntPtr GetForegroundWindow() => ForegroundWindow;
 
@@ -863,9 +925,9 @@ sealed class MockWindowBridge : IWindowBridge
     public uint SendUnicode(char ch)
     {
         if (BlockSendInput) return 0;
-        OnUnicodeChar?.Invoke(SentChars.Count);
         SentChars.Add(ch);
         SentUnicodeCount += 2;
+        OnUnicodeChar?.Invoke(SentChars.Count);
         return 2;
     }
 
@@ -874,6 +936,7 @@ sealed class MockWindowBridge : IWindowBridge
         if (BlockSendInput) return 0;
         SentKeys.Add((vk, down));
         SentKeyCount += 1;
+        OnKey?.Invoke();
         return 1;
     }
 

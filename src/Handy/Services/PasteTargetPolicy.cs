@@ -22,7 +22,7 @@ public enum PasteFocusPolicy
     RefuseAndCopy,
     /// <summary>Attempt to restore focus to the intended window; fall back to clipboard if unsuccessful.</summary>
     RestoreAndPaste,
-    /// <summary>Type into whatever window currently has focus anyway.</summary>
+    /// <summary>Use the current window at paste start; still stop if it changes mid-paste.</summary>
     PasteAnyway,
 }
 

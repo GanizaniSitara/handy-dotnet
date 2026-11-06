@@ -30,11 +30,20 @@ The shortcuts are all configurable on the **General** tab.
 
 ## Where The Text Goes
 
-Handy remembers which window you were in when you started talking, and types
-there. If something else has taken over the screen by the time it is ready —
-a notification, a chat window, a dialog — **it will not type into the wrong
-place**. Instead it puts the transcript on your clipboard and tells you, so you
-can paste it wherever you actually meant.
+Handy remembers which window you were in when you started talking. **Focus
+policy** controls what happens if another window takes focus before the paste:
+**RefuseAndCopy** saves the transcript instead of typing; **RestoreAndPaste**
+tries to restore the original window; **PasteAnyway** starts in the current window.
+
+Once typing starts, every policy stops when Handy detects a different foreground
+window. Handy saves the full transcript to the clipboard and history, and tells
+you it stopped. Check for partial text before using **Retype last transcript**:
+keystrokes Windows already accepted cannot be recalled.
+
+Citrix exposes one viewer window for the whole remote desktop, so Handy cannot
+detect changes between remote apps inside it. Citrix dictations always leave a
+clipboard recovery copy. If clipboard redirection is disabled, use the retype
+shortcut after selecting the correct remote app.
 
 The same happens if Windows refuses the keystrokes. Anything running as
 administrator is protected from ordinary programs typing into it, so if you
