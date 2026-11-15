@@ -27,6 +27,18 @@
 
     <StandardDirectory Id="ProgramMenuFolder" />
 
+    <!-- Start Handy with its window open when the install finishes. Without
+         this a new user saw nothing: the MSI closes silently and Handy starts
+         hidden in the tray. On first run the window then offers the model. -->
+    <CustomAction Id="LaunchHandy"
+                  Directory="INSTALLFOLDER"
+                  ExeCommand="&quot;[INSTALLFOLDER]Handy.exe&quot; --show"
+                  Execute="immediate"
+                  Return="asyncNoWait" />
+    <InstallExecuteSequence>
+      <Custom Action="LaunchHandy" After="InstallFinalize" Condition="NOT REMOVE" />
+    </InstallExecuteSequence>
+
     <Feature Id="Main">
       <Files Directory="INSTALLFOLDER" Include="$(var.PublishDir)\**" />
 

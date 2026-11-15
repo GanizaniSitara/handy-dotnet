@@ -363,13 +363,20 @@ public partial class App : Application
                 SetUiState(_recording, _transcribing, hideOverlay: false);
                 _settingsWindow?.RefreshModelStatus();
                 if (reason == "startup" && _asr?.IsReady != true)
+                {
+                    if (ModelLoadError is { } loadError)
+                        _tray?.Notify("Handy.NET", $"Speech model failed to load: {loadError}");
                     OfferModelDownload(userAsked: false);
+                }
                 else if (reason == "model-download" && _asr?.IsReady == true)
                     _tray?.Notify("Handy.NET", $"Ready. Press {_settings.Hotkey} to dictate.");
             }));
             _ = _asrWarmup?.RequestAsync(reason);
         });
     }
+
+    /// <summary>Why the installed model failed to load, when it did.</summary>
+    internal string? ModelLoadError => (_asr as ParakeetTranscriptionService)?.LoadError;
 
     private bool IsParakeetModelMissing() =>
         NormalizeBackend(_settings.TranscriptionBackend) == "Parakeet" && !HasParakeetAssets(_parakeetModelDir);

@@ -106,11 +106,14 @@ public partial class MainWindow : Window
         ActiveModelSummaryText.Text = $"{active.ModelName} ({active.Backend})";
         ActiveModelStatusText.Text = app.IsModelLoading ? "Loading - dictation will be available shortly" : active.IsReady
             ? "Ready - currently used for transcription"
-            : "Unavailable - check the log for missing models or loading errors";
+            : app.ModelLoadError is { } loadError
+                ? $"Failed to load: {loadError}"
+                : "Unavailable - check the log for missing models or loading errors";
         ActiveModelStatusText.Foreground = app.IsModelLoading ? Brushes.DarkOrange : active.IsReady ? Brushes.ForestGreen : Brushes.Firebrick;
         ActiveModelPathText.Text = active.Path;
         GeneralModelText.Text = app.IsModelLoading ? $"{active.ModelName} - loading"
             : active.IsReady ? active.ModelName
+            : app.ModelLoadError is { } generalLoadError ? $"{active.ModelName} failed to load: {generalLoadError}"
             : "None installed - click Change to download one";
         GeneralModelText.Foreground = active.IsReady && !app.IsModelLoading
             ? ActiveModelSummaryText.Foreground

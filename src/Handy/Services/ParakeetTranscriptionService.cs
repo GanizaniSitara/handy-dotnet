@@ -155,9 +155,13 @@ public sealed class ParakeetTranscriptionService : ITranscriptionService
         catch (Exception ex)
         {
             Dispose();
+            LoadError = ex.GetBaseException().Message;
             Log.Error($"Failed to load Parakeet models: {ex}");
         }
     }
+
+    /// <summary>Why loading failed, for display; null when it did not throw.</summary>
+    public string? LoadError { get; private set; }
 
     // DirectML is Windows' own GPU layer: any DirectX 12 adapter (NVIDIA, AMD,
     // Intel), nothing to install, and its runtime ships inside the package.

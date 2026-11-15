@@ -50,4 +50,18 @@
     <RemoveDir Directories="@(ForeignRuntimeFile->'%(RootDir)%(Directory)')" />
   </Target>
 
+  <!-- onnxruntime.dll (Parakeet) and the whisper.cpp DLLs link against the
+       Visual C++ runtime, which a fresh Windows install does not have: there
+       the model fails to load and Handy reports it unavailable. Ship the
+       runtime app-local beside Handy.exe (Microsoft permits this for these
+       redistributable DLLs), copied from the build machine's System32. -->
+  <Target Name="BundleVcRuntime" AfterTargets="Publish" Condition="'$(RuntimeIdentifier)' == 'win-x64'">
+    <ItemGroup>
+      <VcRuntimeFile Include="$(SystemRoot)\System32\msvcp140.dll;$(SystemRoot)\System32\msvcp140_1.dll;$(SystemRoot)\System32\msvcp140_2.dll;$(SystemRoot)\System32\vcruntime140.dll;$(SystemRoot)\System32\vcruntime140_1.dll;$(SystemRoot)\System32\concrt140.dll;$(SystemRoot)\System32\vcomp140.dll" />
+    </ItemGroup>
+    <Error Condition="!Exists('%(VcRuntimeFile.Identity)')"
+           Text="Visual C++ runtime file %(VcRuntimeFile.Identity) not found; install the VC++ 2015-2022 x64 redistributable on the build machine." />
+    <Copy SourceFiles="@(VcRuntimeFile)" DestinationFolder="$(PublishDir)" SkipUnchangedFiles="true" />
+  </Target>
+
 </Project>
