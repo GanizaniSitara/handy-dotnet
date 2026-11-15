@@ -120,6 +120,8 @@ public partial class MainWindow : Window
             : ActiveModelStatusText.Foreground;
         if (app.ModelDownloadStatus is { } downloading)
             ShowModelDownloadStatus(downloading);
+        else
+            ClearModelDownloadStatus();
 
         var selectionMatchesActive =
             string.Equals(active.Backend, pending.Backend, StringComparison.OrdinalIgnoreCase) &&
@@ -593,6 +595,19 @@ public partial class MainWindow : Window
         ActiveModelStatusText.Foreground = Brushes.DarkOrange;
         DownloadStatus.Text = text;
         DownloadButton.IsEnabled = false;
+        // The footer is visible on every page; the rows above can be scrolled
+        // out of view on the General page.
+        SaveStatusText.Text = text;
+        SaveStatusText.Foreground = Brushes.DarkOrange;
+        SaveStatusText.Tag = "model-download";
+    }
+
+    private void ClearModelDownloadStatus()
+    {
+        if (SaveStatusText is null || !Equals(SaveStatusText.Tag, "model-download")) return;
+        SaveStatusText.Text = string.Empty;
+        SaveStatusText.Foreground = (Brush)FindResource("Brush.Success"); // its XAML colour
+        SaveStatusText.Tag = null;
     }
 
     private async void OnDownloadWhisperModel(object sender, RoutedEventArgs e)

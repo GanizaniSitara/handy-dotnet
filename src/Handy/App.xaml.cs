@@ -451,9 +451,15 @@ public partial class App : Application
             ModelDownloadStatus = null;
             Log.Error($"Model download failed: {ex}");
             _settingsWindow?.RefreshModelStatus();
+            // A socket refused locally (WSAEACCES) is a firewall or security
+            // program blocking Handy, not a network fault; say so plainly.
+            var blocked = ex.GetBaseException() is System.Net.Sockets.SocketException { SocketErrorCode: System.Net.Sockets.SocketError.AccessDenied };
+            var advice = blocked
+                ? "A firewall or security program on this PC is blocking Handy from the internet. " +
+                  "Allow Handy.exe internet access in it, then use Download on the Models tab to try again."
+                : "Check the internet connection, then use Download on the Models tab to try again.";
             MessageBox.Show(
-                $"The speech model download failed:\n\n{ex.Message}\n\n" +
-                "Check the internet connection, then use Download on the Models tab to try again.",
+                $"The speech model download failed.\n\n{advice}\n\nDetails: {ex.GetBaseException().Message}",
                 "Handy.NET - download failed", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
     }

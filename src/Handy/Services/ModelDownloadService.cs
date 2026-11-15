@@ -21,10 +21,18 @@ public sealed class ModelDownloadService
 
     public sealed record Progress(string Phase, double Fraction, long BytesSoFar, long? TotalBytes);
 
+    // HANDY_MODEL_BASE_URL points Parakeet downloads at a mirror holding the
+    // same file names (used by the clean-install test rig, whose firewall
+    // blocks the internet).
+    private static string BaseUrl =>
+        Environment.GetEnvironmentVariable("HANDY_MODEL_BASE_URL") is { Length: > 0 } mirror
+            ? mirror.TrimEnd('/')
+            : "https://blob.handy.computer";
+
     private static string UrlFor(Variant v) => v switch
     {
-        Variant.V2 => "https://blob.handy.computer/parakeet-v2-int8.tar.gz",
-        Variant.V3 => "https://blob.handy.computer/parakeet-v3-int8.tar.gz",
+        Variant.V2 => $"{BaseUrl}/parakeet-v2-int8.tar.gz",
+        Variant.V3 => $"{BaseUrl}/parakeet-v3-int8.tar.gz",
         _ => throw new ArgumentOutOfRangeException(nameof(v)),
     };
 
