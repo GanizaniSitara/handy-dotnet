@@ -1,0 +1,45 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+
+  <!--
+    Per-user install: no admin rights or UAC prompt, files go to
+    %LocalAppData%\Programs\Handy. Settings, history and downloaded models live
+    in %AppData%\Handy and are left alone on upgrade and uninstall.
+
+    UpgradeCode must never change: it is how a newer MSI finds and replaces an
+    older one.
+  -->
+  <Package Name="Handy"
+           Manufacturer="Handy"
+           Version="$(var.Version)"
+           UpgradeCode="52434A18-28DE-430C-8BF4-C941AF49D1CE"
+           Scope="perUser"
+           Compressed="yes">
+
+    <MajorUpgrade AllowSameVersionUpgrades="yes"
+                  DowngradeErrorMessage="A newer version of Handy is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="ProgramsDir" Name="Programs">
+        <Directory Id="INSTALLFOLDER" Name="Handy" />
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder" />
+
+    <Feature Id="Main">
+      <Files Directory="INSTALLFOLDER" Include="$(var.PublishDir)\**" />
+
+      <Component Id="StartMenuShortcut" Directory="ProgramMenuFolder">
+        <Shortcut Id="HandyShortcut"
+                  Name="Handy"
+                  Description="Speech-to-text dictation"
+                  Target="[INSTALLFOLDER]Handy.exe"
+                  WorkingDirectory="INSTALLFOLDER" />
+        <RemoveFolder Id="RemoveInstallFolder" Directory="INSTALLFOLDER" On="uninstall" />
+        <RegistryValue Root="HKCU" Key="Software\Handy" Name="Installed" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </Feature>
+
+  </Package>
+</Wix>

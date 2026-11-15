@@ -52,16 +52,28 @@ jobs:
         shell: pwsh
         run: Compress-Archive -Path publish\${{ steps.version.outputs.name }} -DestinationPath ${{ steps.version.outputs.name }}.zip
 
+      # Per-user MSI built from the same publish folder (see installer\Package.wxs).
+      - name: Build installer
+        run: >
+          dotnet build installer\Handy.Installer.wixproj
+          -c Release
+          -p:HandyPublishDir=..\publish\${{ steps.version.outputs.name }}
+          -p:OutputName=${{ steps.version.outputs.name }}
+          -p:OutputPath=${{ github.workspace }}\
+
       - name: Create release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           $notes = @"
-          Self-contained Windows x64 build. No .NET runtime install needed - unzip and run ``Handy.exe``.
+          Self-contained Windows x64 build. No .NET runtime install needed.
+
+          - **``.msi``** - installs for the current user into ``%LocalAppData%\Programs\Handy`` with a Start menu shortcut. No admin rights needed; installing a newer MSI upgrades in place, and it uninstalls from Settings > Apps.
+          - **``.zip``** - portable: unzip and run ``Handy.exe``.
 
           **This build is unsigned.** Windows SmartScreen will show *Windows protected your PC* on first run; click **More info** then **Run anyway**.
 
           Speech models are not bundled - Handy downloads them on first use from the Models tab. See the README for manual model placement.
           "@
-          gh release create ${{ github.ref_name }} ${{ steps.version.outputs.name }}.zip --title ${{ github.ref_name }} --notes $notes
+          gh release create ${{ github.ref_name }} ${{ steps.version.outputs.name }}.msi ${{ steps.version.outputs.name }}.zip --title ${{ github.ref_name }} --notes $notes

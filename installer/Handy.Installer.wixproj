@@ -1,0 +1,23 @@
+<Project Sdk="WixToolset.Sdk/5.0.2">
+
+  <!--
+    Builds the Windows Installer package from an existing self-contained publish
+    folder. Publish first, then point HandyPublishDir at the folder:
+
+      dotnet publish src\Handy\Handy.csproj -c Release -r win-x64 -p:SelfContained=true -o publish\Handy-win-x64
+      dotnet build installer\Handy.Installer.wixproj -c Release -p:HandyPublishDir=..\publish\Handy-win-x64
+
+    Deliberately not part of Handy.sln: building the solution must not depend on
+    a publish folder existing.
+  -->
+  <PropertyGroup>
+    <InstallerPlatform>x64</InstallerPlatform>
+    <OutputName Condition="'$(OutputName)' == ''">Handy-$(VersionPrefix)-win-x64</OutputName>
+    <HandyPublishDir Condition="'$(HandyPublishDir)' == ''">..\publish\Handy-win-x64</HandyPublishDir>
+    <DefineConstants>PublishDir=$(HandyPublishDir);Version=$(VersionPrefix)</DefineConstants>
+    <!-- Per-user install under %LocalAppData%: these ICEs demand a registry key
+         path on every file component, which a harvested folder cannot provide. -->
+    <SuppressIces>ICE38;ICE64;ICE91</SuppressIces>
+  </PropertyGroup>
+
+</Project>

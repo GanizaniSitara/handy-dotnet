@@ -144,9 +144,14 @@ greedy loop → token ids → vocab.txt → text
 ## Download
 
 Prebuilt Windows x64 binaries are on the
-[releases page](https://github.com/GanizaniSitara/handy-dotnet/releases). The zip is
-self-contained — unzip it anywhere and run `Handy.exe`; no .NET runtime install
-needed.
+[releases page](https://github.com/GanizaniSitara/handy-dotnet/releases), as an
+installer and a zip. Both are self-contained; no .NET runtime install needed.
+
+- **`.msi`** — installs for the current user into `%LocalAppData%\Programs\Handy`
+  and adds a Start menu shortcut. No admin rights needed. A newer MSI upgrades in
+  place; uninstall from Settings > Apps. Settings, history and models in
+  `%AppData%\Handy` are kept.
+- **`.zip`** — portable: unzip it anywhere and run `Handy.exe`.
 
 **Builds are unsigned.** Code-signing certificates now require hardware tokens and
 several hundred pounds a year, which isn't proportionate for a fork like this. On
@@ -185,6 +190,12 @@ Self-contained single-folder publish:
 
 ```cmd
 dotnet publish src\Handy\Handy.csproj -c Release -r win-x64 -p:SelfContained=true -o publish
+```
+
+MSI installer from that folder (WiX 5, restored from NuGet on first build):
+
+```cmd
+dotnet build installer\Handy.Installer.wixproj -c Release -p:HandyPublishDir=..\publish
 ```
 
 ### From Visual Studio
