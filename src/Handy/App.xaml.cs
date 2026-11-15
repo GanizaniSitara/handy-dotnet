@@ -85,6 +85,12 @@ public partial class App : Application
     private Func<string, SileroVadService> _createVad = path => new(path);
     internal bool IsModelLoading => _modelLoading;
 
+    // A fresh install has no speech model. Rather than leave the user to find
+    // the Models tab, offer the default download at startup and again on the
+    // first dictation attempt.
+    private bool _modelDownloadOffered;
+    private bool _modelDownloadRunning;
+
     // When decoding only the tail (UsePrefixPlusTail), include this much audio
     // BEFORE the snapshot boundary so a word straddling the splice point is fully
     // re-decoded; TranscriptSplicer dedups the overlapping words at the join.
@@ -356,9 +362,64 @@ public partial class App : Application
                 if (generation != _modelLoadGeneration || Volatile.Read(ref _shutdownCleanupStarted) != 0) return;
                 SetUiState(_recording, _transcribing, hideOverlay: false);
                 _settingsWindow?.RefreshModelStatus();
+                if (reason == "startup" && _asr?.IsReady != true)
+                    OfferModelDownload(userAsked: false);
+                else if (reason == "model-download" && _asr?.IsReady == true)
+                    _tray?.Notify("Handy.NET", $"Ready. Press {_settings.Hotkey} to dictate.");
             }));
             _ = _asrWarmup?.RequestAsync(reason);
         });
+    }
+
+    private bool IsParakeetModelMissing() =>
+        NormalizeBackend(_settings.TranscriptionBackend) == "Parakeet" && !HasParakeetAssets(_parakeetModelDir);
+
+    /// <summary>Ask once at startup (and again whenever the user tries to
+    /// dictate) whether to download the default Parakeet model.</summary>
+    private void OfferModelDownload(bool userAsked)
+    {
+        if (_modelDownloadRunning || !IsParakeetModelMissing()) return;
+        if (_modelDownloadOffered && !userAsked) return;
+        _modelDownloadOffered = true;
+
+        // Auto prefers V3, matching ResolveModelDir's search order.
+        var variant = NormalizeParakeetVariant(_settings.ParakeetVariant) == "V2"
+            ? ModelDownloadService.Variant.V2
+            : ModelDownloadService.Variant.V3;
+        var size = variant == ModelDownloadService.Variant.V2 ? "about 475 MB" : "about 478 MB";
+        var answer = MessageBox.Show(
+            $"Handy needs a speech model before it can transcribe, and none is installed yet.\n\n" +
+            $"Download Parakeet {variant} now ({size})? It downloads in the background and " +
+            "Handy tells you when dictation is ready.",
+            "Handy.NET - download speech model",
+            MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.Yes);
+        if (answer != MessageBoxResult.Yes)
+        {
+            Log.Info($"Model download offer declined (variant={variant}).");
+            return;
+        }
+        _ = DownloadModelAsync(variant);
+    }
+
+    private async Task DownloadModelAsync(ModelDownloadService.Variant variant)
+    {
+        _modelDownloadRunning = true;
+        _tray?.Notify("Handy.NET", $"Downloading the Parakeet {variant} speech model. Handy will tell you when it is ready.");
+        try
+        {
+            await Task.Run(() => ModelDownloadService.DownloadAsync(ModelsRoot, variant, null, CancellationToken.None));
+            _parakeetModelDir = ResolveModelDir(_dataDir, _settings.ParakeetVariant, _settings.ParakeetExecutionProvider);
+            QueueModelLoad("model-download");
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"Model download failed: {ex}");
+            _tray?.Notify("Handy.NET", $"Speech model download failed: {ex.Message}. Retry from Settings > Models.");
+        }
+        finally
+        {
+            _modelDownloadRunning = false;
+        }
     }
 
     private TranscriptionWarmup CreateWarmup() =>
@@ -580,7 +641,13 @@ public partial class App : Application
         if (_asr is null || !_asr.IsReady)
         {
             Log.Warn("Model not loaded; cannot start recording.");
-            _tray?.Notify("Handy.NET", $"{NormalizeBackend(_settings.TranscriptionBackend)} model missing. See README.");
+            if (_modelDownloadRunning)
+                _tray?.Notify("Handy.NET", "The speech model is still downloading. Dictation works as soon as it finishes.");
+            else if (IsParakeetModelMissing())
+                // Deferred so the modal prompt never runs inside the hotkey path.
+                Dispatcher.BeginInvoke(new Action(() => OfferModelDownload(userAsked: true)));
+            else
+                _tray?.Notify("Handy.NET", $"{NormalizeBackend(_settings.TranscriptionBackend)} model missing. See README.");
             return;
         }
         _recording = true;

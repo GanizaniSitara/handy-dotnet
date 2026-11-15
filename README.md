@@ -159,9 +159,11 @@ first run Windows SmartScreen will show *"Windows protected your PC"* — click
 **More info**, then **Run anyway**. If you'd rather not take that on trust, build
 from source below; it's two commands.
 
-Speech models are not bundled. Handy downloads them on first use from the Models
-tab — see [Parakeet model](#parakeet-model) and [Whisper model](#whisper-model)
-for manual placement.
+Speech models are not bundled. On first start with no model installed, Handy
+offers to download the default Parakeet model (about 478 MB) and is ready as soon
+as it finishes; other models are on the Models tab. See
+[Parakeet model](#parakeet-model) and [Whisper model](#whisper-model) for manual
+placement.
 
 ## Build
 
