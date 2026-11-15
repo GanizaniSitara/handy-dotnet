@@ -387,12 +387,19 @@ public partial class App : Application
             ? ModelDownloadService.Variant.V3
             : ModelDownloadService.Variant.V2;
         var size = variant == ModelDownloadService.Variant.V2 ? "about 475 MB" : "about 478 MB";
-        var answer = MessageBox.Show(
+        // Open the settings window first and own the prompt with it: a tray app
+        // at startup has no window, and an unowned prompt can land behind
+        // whatever else is open. The window then shows the download progress.
+        ShowSettings();
+        var question =
             $"Handy needs a speech model before it can transcribe, and none is installed yet.\n\n" +
-            $"Download Parakeet {variant} now ({size})? It downloads in the background and " +
-            "Handy tells you when dictation is ready.",
-            "Handy.NET - download speech model",
-            MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.Yes);
+            $"Download Parakeet {variant} now ({size})? Progress shows on this window, " +
+            "and dictation works as soon as it finishes.";
+        var answer = _settingsWindow is not null
+            ? MessageBox.Show(_settingsWindow, question, "Handy.NET - download speech model",
+                MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.Yes)
+            : MessageBox.Show(question, "Handy.NET - download speech model",
+                MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.Yes);
         if (answer != MessageBoxResult.Yes)
         {
             Log.Info($"Model download offer declined (variant={variant}).");
@@ -401,25 +408,53 @@ public partial class App : Application
         _ = DownloadModelAsync(variant);
     }
 
-    private async Task DownloadModelAsync(ModelDownloadService.Variant variant)
+    /// <summary>Text for the settings window while a model download runs; null otherwise.</summary>
+    internal string? ModelDownloadStatus { get; private set; }
+
+    internal bool IsModelDownloadRunning => _modelDownloadRunning;
+
+    /// <summary>Download a Parakeet variant, showing progress in the settings
+    /// window, then load it straight away. Used by the first-run offer and by
+    /// the Download button on the Models tab.</summary>
+    internal async Task DownloadModelAsync(ModelDownloadService.Variant variant)
     {
+        if (_modelDownloadRunning) return;
         _modelDownloadRunning = true;
-        _tray?.Notify("Handy.NET", $"Downloading the Parakeet {variant} speech model. Handy will tell you when it is ready.");
+        SetModelDownloadStatus($"Starting Parakeet {variant} download...");
+        // Created on the UI thread, so reports arrive on it.
+        var progress = new Progress<ModelDownloadService.Progress>(p =>
+        {
+            if (!_modelDownloadRunning) return;
+            SetModelDownloadStatus(p.TotalBytes is long total && total > 0
+                ? $"{p.Phase} Parakeet {variant}: {p.BytesSoFar / (1024 * 1024)} / {total / (1024 * 1024)} MB ({p.Fraction:P0})"
+                : $"{p.Phase} Parakeet {variant}...");
+        });
         try
         {
-            await Task.Run(() => ModelDownloadService.DownloadAsync(ModelsRoot, variant, null, CancellationToken.None));
+            await Task.Run(() => ModelDownloadService.DownloadAsync(ModelsRoot, variant, progress, CancellationToken.None));
+            _modelDownloadRunning = false;
+            ModelDownloadStatus = null;
             _parakeetModelDir = ResolveModelDir(_dataDir, _settings.ParakeetVariant, _settings.ParakeetExecutionProvider);
+            Log.Info($"Model download finished; loading {_parakeetModelDir}");
             QueueModelLoad("model-download");
         }
         catch (Exception ex)
         {
-            Log.Error($"Model download failed: {ex}");
-            _tray?.Notify("Handy.NET", $"Speech model download failed: {ex.Message}. Retry from Settings > Models.");
-        }
-        finally
-        {
             _modelDownloadRunning = false;
+            ModelDownloadStatus = null;
+            Log.Error($"Model download failed: {ex}");
+            _settingsWindow?.RefreshModelStatus();
+            MessageBox.Show(
+                $"The speech model download failed:\n\n{ex.Message}\n\n" +
+                "Check the internet connection, then use Download on the Models tab to try again.",
+                "Handy.NET - download failed", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
+    }
+
+    private void SetModelDownloadStatus(string text)
+    {
+        ModelDownloadStatus = text;
+        _settingsWindow?.ShowModelDownloadStatus(text);
     }
 
     private TranscriptionWarmup CreateWarmup() =>

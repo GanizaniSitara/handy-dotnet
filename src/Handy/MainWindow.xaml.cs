@@ -115,6 +115,8 @@ public partial class MainWindow : Window
         GeneralModelText.Foreground = active.IsReady && !app.IsModelLoading
             ? ActiveModelSummaryText.Foreground
             : ActiveModelStatusText.Foreground;
+        if (app.ModelDownloadStatus is { } downloading)
+            ShowModelDownloadStatus(downloading);
 
         var selectionMatchesActive =
             string.Equals(active.Backend, pending.Backend, StringComparison.OrdinalIgnoreCase) &&
@@ -562,38 +564,32 @@ public partial class MainWindow : Window
         var pick = (string?)((ComboBoxItem)DownloadVariantCombo.SelectedItem)?.Content ?? "V2";
         var variant = pick == "V3" ? ModelDownloadService.Variant.V3 : ModelDownloadService.Variant.V2;
 
-        var dataDir = System.IO.Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Handy");
-        var modelsRoot = System.IO.Path.Combine(dataDir, "models");
-
+        // Same path as the first-run offer: progress shows here and on the
+        // General page, and the model loads as soon as it is extracted. This
+        // used to end with "Restart Handy.NET to use it".
         DownloadButton.IsEnabled = false;
-        DownloadStatus.Text = $"Starting {pick} download…";
-
-        var progress = new Progress<ModelDownloadService.Progress>(p =>
-        {
-            var pct = (p.Fraction * 100).ToString("F1");
-            var mb  = p.TotalBytes.HasValue
-                ? $"{p.BytesSoFar / (1024.0 * 1024.0):F1} / {p.TotalBytes.Value / (1024.0 * 1024.0):F1} MB"
-                : $"{p.BytesSoFar / (1024.0 * 1024.0):F1} MB";
-            DownloadStatus.Text = $"{p.Phase}: {pct}%  ({mb})";
-        });
-
         try
         {
-            var dir = await ModelDownloadService.DownloadAsync(modelsRoot, variant, progress,
-                System.Threading.CancellationToken.None);
-            DownloadStatus.Text = $"Installed to {dir}. Restart Handy.NET to use it.";
-            RefreshModelStatus();
-        }
-        catch (Exception ex)
-        {
-            DownloadStatus.Text = $"Download failed: {ex.Message}";
-            Log.Error($"Model download failed: {ex}");
+            await ((App)Application.Current).DownloadModelAsync(variant);
         }
         finally
         {
             DownloadButton.IsEnabled = true;
+            DownloadStatus.Text = string.Empty;
+            RefreshModelStatus();
         }
+    }
+
+    /// <summary>Show model download progress wherever the model is described.</summary>
+    internal void ShowModelDownloadStatus(string text)
+    {
+        if (GeneralModelText is null) return;
+        GeneralModelText.Text = text;
+        GeneralModelText.Foreground = Brushes.DarkOrange;
+        ActiveModelStatusText.Text = text;
+        ActiveModelStatusText.Foreground = Brushes.DarkOrange;
+        DownloadStatus.Text = text;
+        DownloadButton.IsEnabled = false;
     }
 
     private async void OnDownloadWhisperModel(object sender, RoutedEventArgs e)
