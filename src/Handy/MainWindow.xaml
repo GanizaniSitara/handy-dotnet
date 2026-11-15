@@ -232,7 +232,23 @@
                     <TextBlock Text="TRANSCRIPTION" Style="{StaticResource Text.SectionGroupTitle}"/>
                     <Border Style="{StaticResource SettingsCard}">
                         <StackPanel>
+                            <!-- The model in use, on the first page: it used to be
+                                 visible only on the Models tab. -->
                             <Border Style="{StaticResource SettingsRowFirst}">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="110"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="Speech model" Style="{StaticResource Text.SettingLabel}"/>
+                                    <TextBlock Grid.Column="1" x:Name="GeneralModelText" VerticalAlignment="Center"
+                                               TextTrimming="CharacterEllipsis"/>
+                                    <Button Grid.Column="2" Style="{StaticResource SecondaryButton}" Content="Change…"
+                                            Click="OnOpenModelsTab" Margin="8,0,0,0"/>
+                                </Grid>
+                            </Border>
+                            <Border Style="{StaticResource SettingsRow}">
                                 <Grid>
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="*"/>
@@ -633,7 +649,7 @@
                                         <ColumnDefinition Width="140"/>
                                     </Grid.ColumnDefinitions>
                                     <TextBlock Grid.Column="0" Text="Parakeet variant" Style="{StaticResource Text.SettingLabel}"
-                                               ToolTip="Auto prefers v3 if installed, else v2. Pick V2 or V3 to force a specific generation."/>
+                                               ToolTip="Auto prefers v2 (English only, faster) if installed, else v3 (multilingual). Pick V2 or V3 to force a specific generation."/>
                                     <ComboBox Grid.Column="1" x:Name="ParakeetVariantCombo" SelectionChanged="OnModelSelectionChanged">
                                         <ComboBoxItem Content="Auto"/>
                                         <ComboBoxItem Content="V2"/>

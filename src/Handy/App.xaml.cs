@@ -382,10 +382,10 @@ public partial class App : Application
         if (_modelDownloadOffered && !userAsked) return;
         _modelDownloadOffered = true;
 
-        // Auto prefers V3, matching ResolveModelDir's search order.
-        var variant = NormalizeParakeetVariant(_settings.ParakeetVariant) == "V2"
-            ? ModelDownloadService.Variant.V2
-            : ModelDownloadService.Variant.V3;
+        // Auto prefers V2, matching ResolveModelDir's search order.
+        var variant = NormalizeParakeetVariant(_settings.ParakeetVariant) == "V3"
+            ? ModelDownloadService.Variant.V3
+            : ModelDownloadService.Variant.V2;
         var size = variant == ModelDownloadService.Variant.V2 ? "about 475 MB" : "about 478 MB";
         var answer = MessageBox.Show(
             $"Handy needs a speech model before it can transcribe, and none is installed yet.\n\n" +
@@ -1854,7 +1854,8 @@ public partial class App : Application
         {
             "V2" => new[] { "parakeet-tdt-0.6b-v2-int8", "parakeet-tdt-0.6b-v3-int8" },
             "V3" => new[] { "parakeet-tdt-0.6b-v3-int8", "parakeet-tdt-0.6b-v2-int8" },
-            _    => new[] { "parakeet-tdt-0.6b-v3-int8", "parakeet-tdt-0.6b-v2-int8" },
+            // Auto: V2 first. It is English-only and the faster of the two.
+            _    => new[] { "parakeet-tdt-0.6b-v2-int8", "parakeet-tdt-0.6b-v3-int8" },
         };
         // A GPU wants the fp32 export (same directory name without "-int8"),
         // so those come first when the provider allows it; int8 stays as the

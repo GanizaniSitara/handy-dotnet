@@ -159,7 +159,7 @@ public sealed class AppSettings
     public string TranscriptionBackend { get; set; } = "Parakeet";
 
     /// <summary>Auto | V2 | V3. Used only when TranscriptionBackend = Parakeet.
-    /// Auto: prefer v3 if installed, else v2 (legacy behaviour).
+    /// Auto: prefer v2 (English only, faster) if installed, else v3.
     /// V2 / V3: force that variant; if the requested files aren't on disk, fall back to whatever's installed.</summary>
     public string ParakeetVariant { get; set; } = "Auto";
 

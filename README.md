@@ -70,8 +70,9 @@ calling out:
   spliced. Trades a little CPU for noticeably shorter perceived wait on
   long dictations. Experimental, off by default.
 - **Parakeet variant selector** in Settings — `Auto / V2 / V3`. Auto
-  prefers v3 when installed; explicit choice forces that variant. V2 is
-  faster, V3 is generally more accurate on hard audio.
+  prefers v2 when installed; explicit choice forces that variant. V2 is
+  English-only and faster, V3 is multilingual and generally more accurate on
+  hard audio.
 - **Log verbosity tiers.** Quiet / Normal / Verbose / Debug, applied
   independently to the in-app Log panel and the on-disk log file. Quiet
   gives just text-in / text-out; Debug adds the per-keypress firehose.
@@ -160,7 +161,7 @@ first run Windows SmartScreen will show *"Windows protected your PC"* — click
 from source below; it's two commands.
 
 Speech models are not bundled. On first start with no model installed, Handy
-offers to download the default Parakeet model (about 478 MB) and is ready as soon
+offers to download the default Parakeet V2 model (about 475 MB) and is ready as soon
 as it finishes; other models are on the Models tab. See
 [Parakeet model](#parakeet-model) and [Whisper model](#whisper-model) for manual
 placement.

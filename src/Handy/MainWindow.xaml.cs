@@ -109,6 +109,12 @@ public partial class MainWindow : Window
             : "Unavailable - check the log for missing models or loading errors";
         ActiveModelStatusText.Foreground = app.IsModelLoading ? Brushes.DarkOrange : active.IsReady ? Brushes.ForestGreen : Brushes.Firebrick;
         ActiveModelPathText.Text = active.Path;
+        GeneralModelText.Text = app.IsModelLoading ? $"{active.ModelName} - loading"
+            : active.IsReady ? active.ModelName
+            : "None installed - click Change to download one";
+        GeneralModelText.Foreground = active.IsReady && !app.IsModelLoading
+            ? ActiveModelSummaryText.Foreground
+            : ActiveModelStatusText.Foreground;
 
         var selectionMatchesActive =
             string.Equals(active.Backend, pending.Backend, StringComparison.OrdinalIgnoreCase) &&
@@ -512,6 +518,8 @@ public partial class MainWindow : Window
         PanelLog.Visibility      = NavLog.IsChecked      == true ? Visibility.Visible : Visibility.Collapsed;
         RenderLog();
     }
+
+    private void OnOpenModelsTab(object sender, RoutedEventArgs e) => NavModels.IsChecked = true;
 
     private bool _gpuDownloadRunning;
 
